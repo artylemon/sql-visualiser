@@ -2,118 +2,138 @@
 using System;
 using System.Collections.Generic;
 using System.Data.SqlClient;
+using System.Text.RegularExpressions;
 
 class Program
 {
     static void Main(string[] args)
     {
-        if (args.Length != 2)
+        if (args.Length != 1)
         {
-            Console.WriteLine("Usage: YourProgramName <connectionString> <tableName>");
+            Console.WriteLine("Usage: SqlVisualiser <connectionString>");
             return;
         }
 
-        string connectionString = args[0];
-        string tableName = args[1];
-
-        try
-        {
-            Dictionary<string, string> readProcedures;
-            Dictionary<string, string> writeProcedures;
-
-            AnalyzeStoredProcedures(connectionString, tableName, out readProcedures, out writeProcedures);
-
-            Console.WriteLine("Stored Procedures that READ from the table:");
-            foreach (var proc in readProcedures)
-            {
-                Console.WriteLine($"Procedure: {proc.Key}, Type of Read: {proc.Value}");
-            }
-
-            Console.WriteLine("\nStored Procedures that WRITE to the table:");
-            foreach (var proc in writeProcedures)
-            {
-                Console.WriteLine($"Procedure: {proc.Key}, Type of Write: {proc.Value}");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error: {ex.Message}");
-        }
-    }
-
-    static void AnalyzeStoredProcedures(string connectionString, string tableName, out Dictionary<string, string> readProcedures, out Dictionary<string, string> writeProcedures)
-    {
-        readProcedures = new Dictionary<string, string>();
-        writeProcedures = new Dictionary<string, string>();
+        var connectionString = args[0];
+        //string tableName = args[1];
 
         using (SqlConnection connection = new SqlConnection(connectionString))
         {
             connection.Open();
 
-            // Query to get all procedures that reference the table in any way
-            string query = @"
-                SELECT 
-                    p.name AS ProcedureName,
-                    d.referenced_entity_name AS ReferencedEntity,
-                    r.referencing_id,
-                    r.referencing_minor_id
-                FROM 
-                    sys.procedures p
-                JOIN 
-                    sys.dm_sql_referencing_entities(QUOTENAME(@TableName), 'OBJECT') d ON p.object_id = d.referencing_id
-                JOIN 
-                    sys.sql_modules m ON p.object_id = m.object_id
-                LEFT JOIN 
-                    sys.dm_sql_referenced_entities(QUOTENAME(p.name), 'OBJECT') r ON p.object_id = r.referencing_id
-                WHERE 
-                    d.referenced_class_desc = 'OBJECT'
-                ";
+            // Retrieve all stored procedures
+            string queryStoredProcedures = @"
+                SELECT p.name, m.definition
+                FROM sys.procedures p
+                JOIN sys.sql_modules m ON p.object_id = m.object_id";
 
-            using (SqlCommand command = new SqlCommand(query, connection))
+            SqlCommand command = new SqlCommand(queryStoredProcedures, connection);
+            SqlDataReader reader = command.ExecuteReader();
+
+            var procedures = new List<StoredProcedure>();
+
+            while (reader.Read())
             {
-                command.Parameters.AddWithValue("@TableName", tableName);
+                string procName = reader.GetString(0);
+                string definition = reader.GetString(1);
+                procedures.Add(new StoredProcedure { Name = procName, Definition = definition });
+            }
 
-                using (SqlDataReader reader = command.ExecuteReader())
+            reader.Close();
+
+            // Retrieve all tables
+            string queryTables = @"
+                SELECT name
+                FROM sys.tables";
+            
+            command = new SqlCommand(queryTables, connection);
+            reader = command.ExecuteReader();
+
+            var tables = new List<string>();
+
+            while (reader.Read())
+            {
+                string tableName = reader.GetString(0);
+                tables.Add(tableName);
+            }
+
+            reader.Close();
+
+            // Analyze stored procedures to find which ones read or write to tables
+            Dictionary<string, TableUsage> graph = new Dictionary<string, TableUsage>();
+            
+            foreach (var procedure in procedures)
+            {
+                foreach (var table in tables)
                 {
-                    while (reader.Read())
+                    if (DoesProcedureInteractWithTable(procedure.Definition, table, out bool isRead, out bool isWrite))
                     {
-                        string procedureName = reader["ProcedureName"].ToString()!;
-                        string referencedEntity = reader["ReferencedEntity"].ToString()!;
-
-                        // We can now check how the table is being accessed by analyzing dependency type
-
-                        // For reads (SELECT queries)
-                        if (IsReadOperation(referencedEntity))
+                        if (!graph.ContainsKey(table))
                         {
-                            if (!readProcedures.ContainsKey(procedureName))
-                                readProcedures.Add(procedureName, "Read operation");
+                            graph[table] = new TableUsage { TableName = table };
                         }
 
-                        // For writes (INSERT, UPDATE, DELETE queries)
-                        if (IsWriteOperation(referencedEntity))
-                        {
-                            if (!writeProcedures.ContainsKey(procedureName))
-                                writeProcedures.Add(procedureName, "Write operation");
-                        }
+                        if (isRead)
+                            graph[table].Readers.Add(procedure.Name);
+
+                        if (isWrite)
+                            graph[table].Writers.Add(procedure.Name);
                     }
                 }
+            }
+
+            // Output the graph
+            foreach (var tableUsage in graph.Values)
+            {
+                Console.WriteLine($"Table: {tableUsage.TableName}");
+                Console.WriteLine($"  Readers: {string.Join(", ", tableUsage.Readers)}");
+                Console.WriteLine($"  Writers: {string.Join(", ", tableUsage.Writers)}");
+                Console.WriteLine();
             }
         }
     }
 
-    static bool IsReadOperation(string referencedEntity)
+    static bool DoesProcedureInteractWithTable(string procedureDefinition, string tableName, out bool isRead, out bool isWrite)
     {
-        // You can check further for read-specific logic, such as when it's part of SELECT queries.
-        // For example, you can check referencing_minor_id for a "SELECT" or simply depend on the referenced entity
-        return referencedEntity.ToLower().Contains("select");
-    }
+        isRead = false;
+        isWrite = false;
 
-    static bool IsWriteOperation(string referencedEntity)
-    {
-        // You can check for write-specific operations like INSERT, UPDATE, DELETE
-        return referencedEntity.ToLower().Contains("insert") ||
-               referencedEntity.ToLower().Contains("update") ||
-               referencedEntity.ToLower().Contains("delete");
+        // Escape the table name to ensure special characters are handled
+        string escapedTableName = Regex.Escape(tableName);
+
+        // Define the optional schema pattern: (optional [dbo]. or dbo.)
+        string optionalSchemaPattern = @"(\[dbo\]\.|dbo\.)?";
+
+        // Construct regex patterns for read and write operations
+        string patternRead = $@"\b(FROM|JOIN)\s+{optionalSchemaPattern}[\[\]]*{escapedTableName}[\[\]]*\b";
+        string patternWrite = $@"\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+{optionalSchemaPattern}[\[\]]*{escapedTableName}[\[\]]*\b";
+
+        // Check for reading operations (SELECT FROM, JOIN)
+        if (Regex.IsMatch(procedureDefinition, patternRead, RegexOptions.IgnoreCase))
+        {
+            isRead = true;
+        }
+
+        // Check for writing operations (INSERT INTO, UPDATE, DELETE FROM)
+        if (Regex.IsMatch(procedureDefinition, patternWrite, RegexOptions.IgnoreCase))
+        {
+            isWrite = true;
+        }
+
+        return isRead || isWrite;
     }
 }
 
+
+class StoredProcedure
+{
+    public string Name { get; set; }
+    public string Definition { get; set; }
+}
+
+class TableUsage
+{
+    public string TableName { get; set; }
+    public List<string> Readers { get; set; } = [];
+    public List<string> Writers { get; set; } = [];
+}
