@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "SqlVisualiser": {
+      "commandName": "Project",
+      "commandLineArgs": "\"Data Source=FINTECHDB01-UAT,50001;Initial Catalog=OAS;Integrated Security=true;Persist Security Info=True;Min Pool Size=5;Max Pool Size=120;Connection Lifetime=120;\""
+    }
+  }
+}
