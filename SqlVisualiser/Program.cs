@@ -37,6 +37,7 @@ class Program
                 string procName = reader.GetString(0);
                 string definition = reader.GetString(1);
                 procedures.Add(new StoredProcedure { Name = procName, Definition = definition });
+                Console.WriteLine($"Reading {procName}...");
             }
 
             reader.Close();
@@ -55,15 +56,19 @@ class Program
             {
                 string tableName = reader.GetString(0);
                 tables.Add(tableName);
+                Console.WriteLine($"Reading {tableName}...");
             }
 
             reader.Close();
 
             // Analyze stored procedures to find which ones read or write to tables
             Dictionary<string, TableUsage> graph = new Dictionary<string, TableUsage>();
+
+            Dictionary<string, ProcedureUsage> procedureGraph = new Dictionary<string, ProcedureUsage>();
             
             foreach (var procedure in procedures)
             {
+                Console.WriteLine($"Analysing {procedure.Name}...");
                 foreach (var table in tables)
                 {
                     if (DoesProcedureInteractWithTable(procedure.Definition, table, out bool isRead, out bool isWrite))
@@ -80,14 +85,47 @@ class Program
                             graph[table].Writers.Add(procedure.Name);
                     }
                 }
+
+                // Analyze procedure calls (detect if one procedure calls another)
+                foreach (var targetProcedure in procedures)
+                {
+                    if (DoesProcedureCallAnother(procedure.Definition, targetProcedure.Name))
+                    {
+                        if (!procedureGraph.ContainsKey(procedure.Name))
+                        {
+                            procedureGraph[procedure.Name] = new ProcedureUsage { ProcedureName = procedure.Name };
+                        }
+
+                        if (!procedureGraph.ContainsKey(targetProcedure.Name))
+                        {
+                            procedureGraph[targetProcedure.Name] = new ProcedureUsage { ProcedureName = targetProcedure.Name};
+                        }
+
+                        procedureGraph[procedure.Name].CalledProcedures.Add(targetProcedure.Name);
+                        procedureGraph[targetProcedure.Name].CallingProcedures.Add(procedure.Name);
+                    }
+                }
             }
 
+
             // Output the graph
+            Console.WriteLine("Table Interactions:");
             foreach (var tableUsage in graph.Values)
             {
                 Console.WriteLine($"Table: {tableUsage.TableName}");
                 Console.WriteLine($"  Readers: {string.Join(", ", tableUsage.Readers)}");
                 Console.WriteLine($"  Writers: {string.Join(", ", tableUsage.Writers)}");
+                Console.WriteLine();
+            }
+
+            
+            // Output the graph for procedure calls
+            Console.WriteLine("Procedure Calls:");
+            foreach (var procUsage in procedureGraph.Values)
+            {
+                Console.WriteLine($"Procedure: {procUsage.ProcedureName}");
+                Console.WriteLine($"  Calls: {string.Join(", ", procUsage.CalledProcedures)}");
+                Console.WriteLine($"  Called By: {string.Join(", ", procUsage.CallingProcedures)}");
                 Console.WriteLine();
             }
         }
@@ -122,6 +160,19 @@ class Program
 
         return isRead || isWrite;
     }
+
+    
+    // Check if a stored procedure calls another procedure
+    static bool DoesProcedureCallAnother(string procedureDefinition, string targetProcedure)
+    {
+        // Escape the procedure name for safe matching
+        string escapedProcedureName = Regex.Escape(targetProcedure);
+
+        // Match EXEC or EXECUTE followed by the procedure name (with optional schema)
+        string patternCall = $@"\bEXEC(?:UTE)?\s+{escapedProcedureName}\b";
+        
+        return Regex.IsMatch(procedureDefinition, patternCall, RegexOptions.IgnoreCase);
+    }
 }
 
 
@@ -129,6 +180,15 @@ class StoredProcedure
 {
     public string Name { get; set; }
     public string Definition { get; set; }
+}
+
+
+// Helper class to represent procedure interactions (calls to other procedures)
+class ProcedureUsage
+{
+    public string ProcedureName { get; set; }
+    public List<string> CalledProcedures { get; set; } = new List<string>();
+    public List<string> CallingProcedures { get; set; } = new List<string>();
 }
 
 class TableUsage
