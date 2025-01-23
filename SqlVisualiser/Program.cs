@@ -2,7 +2,9 @@
 using System;
 using System.Collections.Generic;
 using System.Data.SqlClient;
-using System.Text.RegularExpressions;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
+using System.IO;
+using System.Linq;
 
 class Program
 {
@@ -15,7 +17,6 @@ class Program
         }
 
         var connectionString = args[0];
-        //string tableName = args[1];
 
         using (SqlConnection connection = new SqlConnection(connectionString))
         {
@@ -46,7 +47,7 @@ class Program
             string queryTables = @"
                 SELECT name
                 FROM sys.tables";
-            
+
             command = new SqlCommand(queryTables, connection);
             reader = command.ExecuteReader();
 
@@ -65,7 +66,7 @@ class Program
             Dictionary<string, TableUsage> graph = new Dictionary<string, TableUsage>();
 
             Dictionary<string, ProcedureUsage> procedureGraph = new Dictionary<string, ProcedureUsage>();
-            
+
             foreach (var procedure in procedures)
             {
                 Console.WriteLine($"Analysing {procedure.Name}...");
@@ -98,7 +99,7 @@ class Program
 
                         if (!procedureGraph.ContainsKey(targetProcedure.Name))
                         {
-                            procedureGraph[targetProcedure.Name] = new ProcedureUsage { ProcedureName = targetProcedure.Name};
+                            procedureGraph[targetProcedure.Name] = new ProcedureUsage { ProcedureName = targetProcedure.Name };
                         }
 
                         procedureGraph[procedure.Name].CalledProcedures.Add(targetProcedure.Name);
@@ -106,7 +107,6 @@ class Program
                     }
                 }
             }
-
 
             // Output the graph
             Console.WriteLine("Table Interactions:");
@@ -118,7 +118,6 @@ class Program
                 Console.WriteLine();
             }
 
-            
             // Output the graph for procedure calls
             Console.WriteLine("Procedure Calls:");
             foreach (var procUsage in procedureGraph.Values)
@@ -136,64 +135,40 @@ class Program
         isRead = false;
         isWrite = false;
 
-        // Escape the table name to ensure special characters are handled
-        string escapedTableName = Regex.Escape(tableName);
+        TSql130Parser parser = new TSql130Parser(true);
+        IList<ParseError> errors;
+        TSqlFragment fragment = parser.Parse(new StringReader(procedureDefinition), out errors);
 
-        // Define the optional schema pattern: (optional [dbo]. or dbo.)
-        string optionalSchemaPattern = @"(\[dbo\]\.|dbo\.)?";
-
-        // Construct regex patterns for read and write operations
-        string patternRead = $@"\b(FROM|JOIN)\s+{optionalSchemaPattern}[\[\]]*{escapedTableName}[\[\]]*\b";
-        string patternWrite = $@"\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+{optionalSchemaPattern}[\[\]]*{escapedTableName}[\[\]]*\b";
-
-        // Check for reading operations (SELECT FROM, JOIN)
-        if (Regex.IsMatch(procedureDefinition, patternRead, RegexOptions.IgnoreCase))
+        if (errors != null && errors.Count > 0)
         {
-            isRead = true;
+            Console.WriteLine($"Parsing errors: {string.Join(", ", errors.Select(e => e.Message))}");
+            return false;
         }
 
-        // Check for writing operations (INSERT INTO, UPDATE, DELETE FROM)
-        if (Regex.IsMatch(procedureDefinition, patternWrite, RegexOptions.IgnoreCase))
-        {
-            isWrite = true;
-        }
+        var visitor = new TableUsageVisitor(tableName);
+        fragment.Accept(visitor);
+
+        isRead = visitor.IsRead;
+        isWrite = visitor.IsWrite;
 
         return isRead || isWrite;
     }
 
-    
-    // Check if a stored procedure calls another procedure
     static bool DoesProcedureCallAnother(string procedureDefinition, string targetProcedure)
     {
-        // Escape the procedure name for safe matching
-        string escapedProcedureName = Regex.Escape(targetProcedure);
+        TSql130Parser parser = new TSql130Parser(true);
+        IList<ParseError> errors;
+        TSqlFragment fragment = parser.Parse(new StringReader(procedureDefinition), out errors);
 
-        // Match EXEC or EXECUTE followed by the procedure name (with optional schema)
-        string patternCall = $@"\bEXEC(?:UTE)?\s+{escapedProcedureName}\b";
-        
-        return Regex.IsMatch(procedureDefinition, patternCall, RegexOptions.IgnoreCase);
+        if (errors != null && errors.Count > 0)
+        {
+            Console.WriteLine($"Parsing errors: {string.Join(", ", errors.Select(e => e.Message))}");
+            return false;
+        }
+
+        var visitor = new ProcedureCallVisitor(targetProcedure);
+        fragment.Accept(visitor);
+
+        return visitor.IsCalled;
     }
-}
-
-
-class StoredProcedure
-{
-    public string Name { get; set; }
-    public string Definition { get; set; }
-}
-
-
-// Helper class to represent procedure interactions (calls to other procedures)
-class ProcedureUsage
-{
-    public string ProcedureName { get; set; }
-    public List<string> CalledProcedures { get; set; } = new List<string>();
-    public List<string> CallingProcedures { get; set; } = new List<string>();
-}
-
-class TableUsage
-{
-    public string TableName { get; set; }
-    public List<string> Readers { get; set; } = [];
-    public List<string> Writers { get; set; } = [];
 }
