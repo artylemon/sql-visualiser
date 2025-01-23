@@ -5,6 +5,8 @@ using System.Data.SqlClient;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 using System.IO;
 using System.Linq;
+using Models;
+using Visitors;
 
 class Program
 {
@@ -62,49 +64,60 @@ class Program
 
             reader.Close();
 
-            // Analyze stored procedures to find which ones read or write to tables
-            Dictionary<string, TableUsage> graph = new Dictionary<string, TableUsage>();
+            // Create a single parser instance
+            TSql130Parser parser = new TSql130Parser(true);
 
+            // Analyze stored procedures to find which ones read or write to tables and call other procedures
+            Dictionary<string, TableUsage> graph = new Dictionary<string, TableUsage>();
             Dictionary<string, ProcedureUsage> procedureGraph = new Dictionary<string, ProcedureUsage>();
 
             foreach (var procedure in procedures)
             {
                 Console.WriteLine($"Analysing {procedure.Name}...");
-                foreach (var table in tables)
+
+                IList<ParseError> errors;
+                TSqlFragment fragment = parser.Parse(new StringReader(procedure.Definition), out errors);
+
+                if (errors != null && errors.Count > 0)
                 {
-                    if (DoesProcedureInteractWithTable(procedure.Definition, table, out bool isRead, out bool isWrite))
-                    {
-                        if (!graph.ContainsKey(table))
-                        {
-                            graph[table] = new TableUsage { TableName = table };
-                        }
-
-                        if (isRead)
-                            graph[table].Readers.Add(procedure.Name);
-
-                        if (isWrite)
-                            graph[table].Writers.Add(procedure.Name);
-                    }
+                    Console.WriteLine($"Parsing errors: {string.Join(", ", errors.Select(e => e.Message))}");
+                    continue;
                 }
 
-                // Analyze procedure calls (detect if one procedure calls another)
-                foreach (var targetProcedure in procedures)
+                var tableUsageVisitor = new TableUsageVisitor(tables);
+                var procedureCallVisitor = new ProcedureCallVisitor(procedures.Select(p => p.Name).ToList());
+
+                fragment.Accept(tableUsageVisitor);
+                fragment.Accept(procedureCallVisitor);
+
+                foreach (var table in tableUsageVisitor.TableUsages)
                 {
-                    if (DoesProcedureCallAnother(procedure.Definition, targetProcedure.Name))
+                    if (!graph.ContainsKey(table.Key))
                     {
-                        if (!procedureGraph.ContainsKey(procedure.Name))
-                        {
-                            procedureGraph[procedure.Name] = new ProcedureUsage { ProcedureName = procedure.Name };
-                        }
-
-                        if (!procedureGraph.ContainsKey(targetProcedure.Name))
-                        {
-                            procedureGraph[targetProcedure.Name] = new ProcedureUsage { ProcedureName = targetProcedure.Name };
-                        }
-
-                        procedureGraph[procedure.Name].CalledProcedures.Add(targetProcedure.Name);
-                        procedureGraph[targetProcedure.Name].CallingProcedures.Add(procedure.Name);
+                        graph[table.Key] = new TableUsage { TableName = table.Key };
                     }
+
+                    if (table.Value.IsRead)
+                        graph[table.Key].Readers.Add(procedure.Name);
+
+                    if (table.Value.IsWrite)
+                        graph[table.Key].Writers.Add(procedure.Name);
+                }
+
+                foreach (var calledProcedure in procedureCallVisitor.CalledProcedures)
+                {
+                    if (!procedureGraph.ContainsKey(procedure.Name))
+                    {
+                        procedureGraph[procedure.Name] = new ProcedureUsage { ProcedureName = procedure.Name };
+                    }
+
+                    if (!procedureGraph.ContainsKey(calledProcedure))
+                    {
+                        procedureGraph[calledProcedure] = new ProcedureUsage { ProcedureName = calledProcedure };
+                    }
+
+                    procedureGraph[procedure.Name].CalledProcedures.Add(calledProcedure);
+                    procedureGraph[calledProcedure].CallingProcedures.Add(procedure.Name);
                 }
             }
 
@@ -128,47 +141,5 @@ class Program
                 Console.WriteLine();
             }
         }
-    }
-
-    static bool DoesProcedureInteractWithTable(string procedureDefinition, string tableName, out bool isRead, out bool isWrite)
-    {
-        isRead = false;
-        isWrite = false;
-
-        TSql130Parser parser = new TSql130Parser(true);
-        IList<ParseError> errors;
-        TSqlFragment fragment = parser.Parse(new StringReader(procedureDefinition), out errors);
-
-        if (errors != null && errors.Count > 0)
-        {
-            Console.WriteLine($"Parsing errors: {string.Join(", ", errors.Select(e => e.Message))}");
-            return false;
-        }
-
-        var visitor = new TableUsageVisitor(tableName);
-        fragment.Accept(visitor);
-
-        isRead = visitor.IsRead;
-        isWrite = visitor.IsWrite;
-
-        return isRead || isWrite;
-    }
-
-    static bool DoesProcedureCallAnother(string procedureDefinition, string targetProcedure)
-    {
-        TSql130Parser parser = new TSql130Parser(true);
-        IList<ParseError> errors;
-        TSqlFragment fragment = parser.Parse(new StringReader(procedureDefinition), out errors);
-
-        if (errors != null && errors.Count > 0)
-        {
-            Console.WriteLine($"Parsing errors: {string.Join(", ", errors.Select(e => e.Message))}");
-            return false;
-        }
-
-        var visitor = new ProcedureCallVisitor(targetProcedure);
-        fragment.Accept(visitor);
-
-        return visitor.IsCalled;
     }
 }

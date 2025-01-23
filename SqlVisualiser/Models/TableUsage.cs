@@ -1,4 +1,5 @@
-namespace SqlVisualiser;
+namespace SqlVisualiser.Models;
+
 using System.Collections.Generic;
 
 class TableUsage
