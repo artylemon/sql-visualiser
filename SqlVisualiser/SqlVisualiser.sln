@@ -5,6 +5,8 @@ VisualStudioVersion = 17.11.35327.3
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SqlVisualiser", "SqlVisualiser.csproj", "{27B9C55A-0501-481F-9659-966371DD8B74}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SqlVisualiser.Test", "..\SqlVisualiser.Test\SqlVisualiser.Test.csproj", "{BC44EC27-1051-400E-AE94-09F00FB78D24}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{27B9C55A-0501-481F-9659-966371DD8B74}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{27B9C55A-0501-481F-9659-966371DD8B74}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{27B9C55A-0501-481F-9659-966371DD8B74}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BC44EC27-1051-400E-AE94-09F00FB78D24}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BC44EC27-1051-400E-AE94-09F00FB78D24}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BC44EC27-1051-400E-AE94-09F00FB78D24}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BC44EC27-1051-400E-AE94-09F00FB78D24}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

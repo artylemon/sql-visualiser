@@ -2,7 +2,7 @@ namespace SqlVisualiser.Visitors;
 
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-class TableUsageVisitor : TSqlFragmentVisitor
+public class TableUsageVisitor : TSqlFragmentVisitor
 {
     private readonly HashSet<string> tableNames;
     public Dictionary<string, (bool IsRead, bool IsWrite)> TableUsages { get; } = new Dictionary<string, (bool IsRead, bool IsWrite)>();
@@ -21,15 +21,6 @@ class TableUsageVisitor : TSqlFragmentVisitor
 
         var usage = TableUsages[tableName];
         TableUsages[tableName] = (IsRead: usage.IsRead || isRead, IsWrite: usage.IsWrite || isWrite);
-    }
-
-    public override void Visit(NamedTableReference node)
-    {
-        var tableName = node.SchemaObject.BaseIdentifier.Value;
-        if (tableNames.Contains(tableName))
-        {
-            MarkTableUsage(tableName, isRead: true, isWrite: false);
-        }
     }
 
     public override void Visit(InsertStatement node)
@@ -80,24 +71,27 @@ class TableUsageVisitor : TSqlFragmentVisitor
         }
     }
 
-    public override void Visit(QuerySpecification node)
+    public override void Visit(SelectStatement node)
     {
-        foreach (var tableReference in node.FromClause.TableReferences)
+        if (node.QueryExpression is QuerySpecification querySpecification)
         {
-            if (tableReference is NamedTableReference namedTableReference)
+            foreach (var tableReference in querySpecification.FromClause.TableReferences)
             {
-                var tableName = namedTableReference.SchemaObject.BaseIdentifier.Value;
-                if (tableNames.Contains(tableName))
+                if (tableReference is NamedTableReference namedTableReference)
                 {
-                    MarkTableUsage(tableName, isRead: true, isWrite: false);
+                    var tableName = namedTableReference.SchemaObject.BaseIdentifier.Value;
+                    if (tableNames.Contains(tableName))
+                    {
+                        MarkTableUsage(tableName, isRead: true, isWrite: false);
+                    }
                 }
-            }
-            else if (tableReference is SchemaObjectFunctionTableReference functionTableReference)
-            {
-                var tableName = functionTableReference.SchemaObject.BaseIdentifier.Value;
-                if (tableNames.Contains(tableName))
+                else if (tableReference is SchemaObjectFunctionTableReference functionTableReference)
                 {
-                    MarkTableUsage(tableName, isRead: true, isWrite: false);
+                    var tableName = functionTableReference.SchemaObject.BaseIdentifier.Value;
+                    if (tableNames.Contains(tableName))
+                    {
+                        MarkTableUsage(tableName, isRead: true, isWrite: false);
+                    }
                 }
             }
         }
