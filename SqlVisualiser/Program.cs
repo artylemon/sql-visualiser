@@ -26,9 +26,9 @@ class Program
 
             // Retrieve all stored procedures
             string queryStoredProcedures = @"
-                SELECT p.name, m.definition
-                FROM sys.procedures p
-                JOIN sys.sql_modules m ON p.object_id = m.object_id";
+                                SELECT p.name, m.definition
+                                FROM sys.procedures p
+                                JOIN sys.sql_modules m ON p.object_id = m.object_id";
 
             SqlCommand command = new SqlCommand(queryStoredProcedures, connection);
             SqlDataReader reader = command.ExecuteReader();
@@ -47,8 +47,8 @@ class Program
 
             // Retrieve all tables
             string queryTables = @"
-                SELECT name
-                FROM sys.tables";
+                                SELECT name
+                                FROM sys.tables";
 
             command = new SqlCommand(queryTables, connection);
             reader = command.ExecuteReader();
@@ -67,9 +67,8 @@ class Program
             // Create a single parser instance
             TSql130Parser parser = new TSql130Parser(true);
 
-            // Analyze stored procedures to find which ones read or write to tables and call other procedures
-            Dictionary<string, TableUsage> graph = new Dictionary<string, TableUsage>();
-            Dictionary<string, ProcedureUsage> procedureGraph = new Dictionary<string, ProcedureUsage>();
+            // Create a combined visitor instance
+            var combinedVisitor = new CombinedVisitor(tables, procedures.Select(p => p.Name).ToList());
 
             foreach (var procedure in procedures)
             {
@@ -84,60 +83,20 @@ class Program
                     continue;
                 }
 
-                var tableUsageVisitor = new TableUsageVisitor(tables);
-                var procedureCallVisitor = new ProcedureCallVisitor(procedures.Select(p => p.Name).ToList());
-
-                fragment.Accept(tableUsageVisitor);
-                fragment.Accept(procedureCallVisitor);
-
-                foreach (var table in tableUsageVisitor.TableUsages)
-                {
-                    if (!graph.ContainsKey(table.Key))
-                    {
-                        graph[table.Key] = new TableUsage { TableName = table.Key };
-                    }
-
-                    if (table.Value.IsRead)
-                        graph[table.Key].Readers.Add(procedure.Name);
-
-                    if (table.Value.IsWrite)
-                        graph[table.Key].Writers.Add(procedure.Name);
-                }
-
-                foreach (var calledProcedure in procedureCallVisitor.CalledProcedures)
-                {
-                    if (!procedureGraph.ContainsKey(procedure.Name))
-                    {
-                        procedureGraph[procedure.Name] = new ProcedureUsage { ProcedureName = procedure.Name };
-                    }
-
-                    if (!procedureGraph.ContainsKey(calledProcedure))
-                    {
-                        procedureGraph[calledProcedure] = new ProcedureUsage { ProcedureName = calledProcedure };
-                    }
-
-                    procedureGraph[procedure.Name].CalledProcedures.Add(calledProcedure);
-                    procedureGraph[calledProcedure].CallingProcedures.Add(procedure.Name);
-                }
+                combinedVisitor.SetCurrentProcedure(procedure.Name);
+                fragment.Accept(combinedVisitor);
             }
 
             // Output the graph
-            Console.WriteLine("Table Interactions:");
-            foreach (var tableUsage in graph.Values)
+            Console.WriteLine("Graph:");
+            foreach (var node in combinedVisitor.Graph.Values)
             {
-                Console.WriteLine($"Table: {tableUsage.TableName}");
-                Console.WriteLine($"  Readers: {string.Join(", ", tableUsage.Readers)}");
-                Console.WriteLine($"  Writers: {string.Join(", ", tableUsage.Writers)}");
-                Console.WriteLine();
-            }
-
-            // Output the graph for procedure calls
-            Console.WriteLine("Procedure Calls:");
-            foreach (var procUsage in procedureGraph.Values)
-            {
-                Console.WriteLine($"Procedure: {procUsage.ProcedureName}");
-                Console.WriteLine($"  Calls: {string.Join(", ", procUsage.CalledProcedures)}");
-                Console.WriteLine($"  Called By: {string.Join(", ", procUsage.CallingProcedures)}");
+                Console.WriteLine($"{node.Type}: {node.Name}");
+                Console.WriteLine("  Adjacent Nodes: " + string.Join(", ", node.AdjacentNodes.Select(adjNode =>
+                {
+                    var adjNodeType = combinedVisitor.Graph[adjNode].Type;
+                    return $"{adjNodeType}: {adjNode}";
+                })));
                 Console.WriteLine();
             }
         }
