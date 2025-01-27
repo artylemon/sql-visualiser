@@ -92,7 +92,7 @@ class Program
             foreach (var node in combinedVisitor.Graph.Values)
             {
                 Console.WriteLine($"{node.Type}: {node.Name}");
-                Console.WriteLine("  Adjacent Nodes: " + string.Join(", ", node.AdjacentNodes.Select(adjNode =>
+                Console.WriteLine("  Adjacent Nodes: \n\t" + string.Join(",\n\t ", node.AdjacentNodes.Select(adjNode =>
                 {
                     var adjNodeType = combinedVisitor.Graph[adjNode].Type;
                     return $"{adjNodeType}: {adjNode}";
