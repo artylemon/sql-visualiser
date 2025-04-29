@@ -6,7 +6,7 @@ namespace SqlVisualiserWebApp.Services
     using System;
     using Microsoft.SqlServer.TransactSql.ScriptDom;
 
-public class SqlVisualiserService
+    public class SqlVisualiserService
     {
         private readonly ILogger<SqlVisualiserService> _logger;
 
@@ -138,7 +138,7 @@ public class SqlVisualiserService
             return tables;
         }
 
-        public Dictionary<string, GraphNode> AnalyzeDatabase(string connectionString)
+        public Dictionary<string, GraphNode> BuildDatabaseGraph(string connectionString)
         {
             try
             {
@@ -181,6 +181,52 @@ public class SqlVisualiserService
             {
                 _logger.LogError(ex, "An error occurred during database analysis.");
                 throw new InvalidOperationException("Database analysis failed.", ex);
+            }
+        }
+
+        public Dictionary<string, DirectedGraphNode> BuildDirectedDatabaseGraph(string connectionString)
+        {
+            try
+            {
+                _logger.LogInformation($"Starting directed database analysis. With the conenction string {connectionString}");
+
+                // Step 1: Retrieve stored procedures and tables
+                var storedProcedures = GetStoredProcedures(connectionString);
+                var tables = GetTables(connectionString);
+
+                // Step 2: Initialize the DirectedCombinedVisitor
+                var procedureNames = storedProcedures.Select(sp => sp.Name).ToList();
+                var directedVisitor = new DirectedCombinedVisitor(tables, procedureNames);
+
+                // Step 3: Create a single instance of TSql150Parser
+                var parser = new TSql150Parser(false);
+
+                // Step 4: Parse each stored procedure and build the directed graph
+                foreach (var procedure in storedProcedures)
+                {
+                    directedVisitor.SetCurrentProcedure(procedure.Name);
+
+                    using (var reader = new StringReader(procedure.Definition))
+                    {
+                        var fragment = parser.Parse(reader, out var errors);
+
+                        if (errors != null && errors.Count > 0)
+                        {
+                            _logger.LogWarning("Parsing errors in procedure {ProcedureName}: {Errors}", procedure.Name, string.Join(", ", errors.Select(e => e.Message)));
+                            continue; // Skip this procedure if there are parsing errors
+                        }
+
+                        fragment.Accept(directedVisitor);
+                    }
+                }
+
+                _logger.LogInformation("Directed database analysis completed successfully.");
+                return directedVisitor.Graph;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "An error occurred during directed database analysis.");
+                throw new InvalidOperationException("Directed database analysis failed.", ex);
             }
         }
     }
