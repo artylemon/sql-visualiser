@@ -1,0 +1,361 @@
+﻿@{
+    ViewData["Title"] = "Database Analysis";
+}
+
+<div class="container mt-4">
+    <h2>Database Analysis</h2>
+
+    <div id="messageArea" class="mt-3 mb-3"></div>
+
+    <form id="dataSourceForm">
+        <div class="mb-3 d-flex align-items-center">
+            <label for="dataSource" class="form-label me-2 mb-0">Enter Data Source:</label> <input type="text" class="form-control me-2" id="dataSource" name="dataSource" required placeholder="e.g., Server=your_server;Integrated Security=True;" style="flex: 1;" /> <button type="button" id="fetchCatalogsBtn" class="btn btn-secondary rounded-md">Retrieve Catalogs</button>
+        </div>
+    </form>
+
+    <div id="catalogSelection" style="display:none;" class="mt-4">
+        <h4>Select Catalog</h4>
+        <div class="mb-3">
+            <label for="catalogs" class="form-label">Available Catalogs:</label>
+            <select id="catalogs" name="catalogs" class="form-select"></select>
+        </div>
+        <button type="button" id="analyzeCatalog" class="btn btn-primary rounded-md">Analyze Selected Catalog</button>
+    </div>
+
+    <div id="graphContainer" class="mt-4 border rounded-md p-3" style="display:none;">
+        <h4>Dependency Graph</h4>
+        <div id="cy" style="height: 600px; width: 100%; border: 1px solid #ccc; background-color: #f8f9fa;">
+        </div>
+    </div>
+
+</div>
+
+@section Scripts {
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.23.0/cytoscape.min.js"></script>
+
+    <script>
+        $(document).ready(function () {
+
+            // --- Cache jQuery selectors ---
+            const dataSourceInput = $('#dataSource');
+            const catalogSelectionDiv = $('#catalogSelection');
+            const catalogDropdown = $('#catalogs');
+            const messageArea = $('#messageArea');
+            const analyzeButton = $('#analyzeCatalog');
+            const fetchCatalogsButton = $('#fetchCatalogsBtn');
+            const graphContainer = $('#graphContainer');
+            const cyContainer = $('#cy');
+            let cyInstance = null;
+
+            // --- Function to display messages ---
+            function showMessage(message, type = 'danger') {
+                const alertHtml = `
+                    <div class="alert alert-${type} alert-dismissible fade show rounded-md" role="alert">
+                        ${message}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>`;
+                messageArea.html(alertHtml);
+            }
+
+            // --- Function to clear messages ---
+            function clearMessages() {
+                messageArea.html('');
+            }
+
+            // --- Function to hide graph ---
+            function hideGraph() {
+                if (cyInstance) {
+                    try {
+                        cyInstance.destroy(); // Clean up previous instance
+                    } catch (e) {
+                        console.error("Error destroying previous Cytoscape instance:", e);
+                    }
+                    cyInstance = null;
+                }
+                graphContainer.hide();
+                cyContainer.empty(); // Clear the container content just in case
+            }
+
+            // --- Function to fetch catalogs ---
+            function fetchCatalogs() {
+                const dataSource = dataSourceInput.val().trim();
+                hideGraph(); // Hide graph when fetching new catalogs
+
+                if (!dataSource) {
+                    showMessage('Please enter a data source connection string.', 'warning');
+                    dataSourceInput.prop('disabled', false);
+                    fetchCatalogsButton.prop('disabled', false);
+                    catalogSelectionDiv.hide();
+                    catalogDropdown.empty().prop('disabled', true);
+                    analyzeButton.prop('disabled', true);
+                    return;
+                }
+
+                clearMessages();
+                dataSourceInput.prop('disabled', true);
+                fetchCatalogsButton.prop('disabled', true);
+                showMessage('Retrieving catalogs...', 'info'); // Loading message
+
+                $.ajax({
+                    url: '/SqlVisualiser/GetCatalogs',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(dataSource),
+                    dataType: 'json',
+                    success: function (data) {
+                        clearMessages(); // Clear loading message
+                        if (data && data.success) {
+                            showMessage('Successfully connected and fetched catalogs.', 'success');
+                            catalogDropdown.empty();
+
+                            if (data.catalogs && data.catalogs.length > 0) {
+                                data.catalogs.forEach(catalog => {
+                                    catalogDropdown.append($('<option>', { value: catalog, text: catalog }));
+                                });
+                                catalogSelectionDiv.slideDown();
+                                catalogDropdown.prop('disabled', false);
+                                analyzeButton.prop('disabled', false);
+                            } else {
+                                showMessage('Connection successful, but no databases (catalogs) found.', 'warning');
+                                catalogSelectionDiv.slideUp();
+                                catalogDropdown.prop('disabled', true);
+                                analyzeButton.prop('disabled', true);
+                            }
+                        } else {
+                            const errorMessage = data && data.message ? data.message : 'An unknown error occurred while fetching catalogs.';
+                            showMessage(errorMessage, 'danger');
+                            catalogSelectionDiv.slideUp();
+                            catalogDropdown.empty().prop('disabled', true);
+                            analyzeButton.prop('disabled', true);
+                        }
+                    },
+                    error: function (jqXHR, textStatus, errorThrown) {
+                        clearMessages(); // Clear loading message
+                        console.error("AJAX Error (GetCatalogs):", textStatus, errorThrown, jqXHR.responseText);
+                        let errorMsg = 'An error occurred while communicating with the server. Please check the connection string or server status.';
+                        if(jqXHR.status === 400) {
+                            errorMsg = 'Invalid request. Please check the format of your connection string.';
+                        } else if (jqXHR.status === 500) {
+                             errorMsg = 'A server error occurred while fetching catalogs. Please try again later or contact support.';
+                        }
+                        showMessage(errorMsg, 'danger');
+                        catalogSelectionDiv.slideUp();
+                        catalogDropdown.empty().prop('disabled', true);
+                        analyzeButton.prop('disabled', true);
+                    },
+                    complete: function() {
+                        // Re-enable controls regardless of success/error
+                        dataSourceInput.prop('disabled', false);
+                        fetchCatalogsButton.prop('disabled', false);
+                    }
+                });
+            }
+
+            // --- Event Listener for Fetch Catalogs Button Click ---
+            fetchCatalogsButton.on('click', fetchCatalogs);
+
+            // --- Event Listener for Analyze Button Click ---
+            analyzeButton.on('click', function () {
+                const selectedCatalog = catalogDropdown.val();
+                const dataSource = dataSourceInput.val().trim();
+                hideGraph(); // Hide previous graph before analyzing again
+
+                if (!selectedCatalog) {
+                    showMessage('Please select a catalog to analyze.', 'warning');
+                    return;
+                }
+                if (!dataSource) {
+                    showMessage('Data source is missing.', 'warning');
+                    return;
+                }
+
+                clearMessages();
+                dataSourceInput.prop('disabled', true);
+                fetchCatalogsButton.prop('disabled', true);
+                catalogDropdown.prop('disabled', true);
+                analyzeButton.prop('disabled', true);
+                showMessage('Analyzing catalog dependencies...', 'info'); // Show processing message
+
+                const postData = { dataSource: dataSource, catalog: selectedCatalog };
+
+                $.ajax({
+                    url: '/SqlVisualiser/AnalyseConnectionString',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(postData),
+                    dataType: 'json', // Expecting JSON back from the server
+                    success: function (response) {
+                        // --- DEBUG: Log the raw response ---
+                        console.log('Raw analysis response:', response);
+
+                        // --- Check the structure of the response ---
+                        if (response && typeof response === 'object') {
+                            if (response.success && response.graph && typeof response.graph === 'object' && Object.keys(response.graph).length > 0) {
+                                showMessage('Analysis successful. Processing graph data...', 'success');
+                                console.log("Analysis successful, graph data:", response.graph);
+
+                                // --- Process data for Cytoscape ---
+                                const elements = [];
+                                const apiGraph = response.graph;
+                                let processingError = false;
+
+                                try {
+                                    // 1. Create nodes
+                                    Object.keys(apiGraph).forEach(nodeName => {
+                                        const nodeData = apiGraph[nodeName];
+                                        if (!nodeData || typeof nodeData.type === 'undefined') {
+                                            console.error(`Invalid data for node: ${nodeName}`, nodeData);
+                                            processingError = true;
+                                            return; // Skip this invalid node
+                                        }
+                                        elements.push({
+                                            group: 'nodes',
+                                            data: {
+                                                id: nodeName,
+                                                label: nodeName,
+                                                type: nodeData.type
+                                            }
+                                        });
+                                    });
+
+                                    // 2. Create edges (only if node processing was successful)
+                                    if (!processingError) {
+                                        Object.keys(apiGraph).forEach(sourceNodeName => {
+                                            const nodeData = apiGraph[sourceNodeName];
+                                            if (nodeData.adjacentNodes && Array.isArray(nodeData.adjacentNodes)) {
+                                                nodeData.adjacentNodes.forEach(targetNodeName => {
+                                                    if (apiGraph[targetNodeName]) { // Check target exists
+                                                        elements.push({
+                                                            group: 'edges',
+                                                            data: {
+                                                                id: `edge_${sourceNodeName}_to_${targetNodeName}`, // Ensure unique ID
+                                                                source: sourceNodeName,
+                                                                target: targetNodeName
+                                                            }
+                                                        });
+                                                    } else {
+                                                        console.warn(`Target node "${targetNodeName}" referenced by "${sourceNodeName}" not found in graph data. Skipping edge.`);
+                                                    }
+                                                });
+                                            }
+                                        });
+                                    }
+                                } catch (e) {
+                                    console.error("Error processing graph data:", e);
+                                    showMessage('Error processing graph data received from server. Check console.', 'danger');
+                                    processingError = true;
+                                }
+
+
+                                // --- Initialize Cytoscape (only if processing was successful) ---
+                                if (!processingError) {
+                                    // --- DEBUG: Log the processed elements ---
+                                    console.log('Processed elements for Cytoscape:', elements);
+
+                                    graphContainer.show(); // Show the graph container div
+
+                                    try {
+                                        cyInstance = cytoscape({
+                                            container: document.getElementById('cy'),
+                                            elements: elements,
+                                            style: [
+                                                {
+                                                    selector: 'node',
+                                                    style: { /* ... existing styles ... */
+                                                        'background-color': '#666', 'label': 'data(label)', 'width': 'label', 'height': 'label',
+                                                        'padding': '10px', 'shape': 'rectangle', 'text-valign': 'center', 'text-halign': 'center',
+                                                        'font-size': '10px', 'color': '#fff', 'text-outline-width': 1, 'text-outline-color': '#666'
+                                                    }
+                                                },
+                                                {
+                                                    selector: 'node[type = 0]', // Tables
+                                                    style: { 'background-color': '#3498db', 'shape': 'round-rectangle', 'text-outline-color': '#3498db' }
+                                                },
+                                                {
+                                                    selector: 'node[type = 1]', // Stored Procs
+                                                    style: { 'background-color': '#f1c40f', 'shape': 'ellipse', 'text-outline-color': '#f1c40f', 'color': '#333' }
+                                                },
+                                                {
+                                                    selector: 'edge',
+                                                    style: { /* ... existing styles ... */
+                                                        'width': 2, 'line-color': '#ccc', 'target-arrow-color': '#ccc',
+                                                        'target-arrow-shape': 'triangle', 'curve-style': 'bezier'
+                                                    }
+                                                }
+                                            ],
+                                            layout: { /* ... existing layout ... */
+                                                name: 'cose', idealEdgeLength: 100, nodeOverlap: 20, refresh: 20, fit: true, padding: 30,
+                                                randomize: false, componentSpacing: 100, nodeRepulsion: 400000, edgeElasticity: 100,
+                                                nestingFactor: 5, gravity: 80, numIter: 1000, initialTemp: 200, coolingFactor: 0.95, minTemp: 1.0
+                                            }
+                                        });
+
+                                        // Add zoom/pan controls
+                                        cyInstance.zoomingEnabled(true);
+                                        cyInstance.panningEnabled(true);
+                                        cyInstance.userZoomingEnabled(true);
+                                        cyInstance.userPanningEnabled(true);
+
+                                        showMessage('Analysis successful. Dependency graph rendered.', 'success'); // Update message after rendering
+
+                                    } catch (cyError) {
+                                        // --- DEBUG: Catch Cytoscape initialization errors ---
+                                        console.error("Cytoscape initialization error:", cyError);
+                                        showMessage('Error rendering the graph. Check console for details.', 'danger');
+                                        hideGraph(); // Hide container if rendering fails
+                                    }
+                                } else {
+                                     hideGraph(); // Hide graph if processing failed
+                                }
+
+                            } else if (response.success && (!response.graph || typeof response.graph !== 'object' || Object.keys(response.graph).length === 0)) {
+                                // Handle case where analysis succeeded but no graph data was returned
+                                showMessage('Analysis completed, but no dependency data was found for this catalog.', 'warning');
+                                hideGraph();
+                            } else {
+                                // Handle analysis failure reported by the API (success: false)
+                                const errorMessage = response.message ? response.message : 'Analysis failed. No specific error message provided.';
+                                showMessage(`Analysis failed: ${errorMessage}`, 'danger');
+                                hideGraph();
+                            }
+                        } else {
+                            // Handle cases where the response is not a valid JSON object or is malformed
+                            console.error("Invalid response format received from server:", response);
+                            showMessage('Received an invalid response format from the server. Check console.', 'danger');
+                            hideGraph();
+                        }
+                    },
+                    error: function (jqXHR, textStatus, errorThrown) {
+                        // --- Handle AJAX communication errors ---
+                        console.error("AJAX Error (AnalyseConnectionString):", textStatus, errorThrown, jqXHR.responseText);
+                        let errorMsg = 'An error occurred while sending the analysis request.';
+                        if (jqXHR.status === 404) {
+                             errorMsg = 'Analysis endpoint not found (404). Check the URL.';
+                        } else if (jqXHR.status === 500) {
+                             errorMsg = 'A server error occurred during analysis (500). Please check server logs or contact support.';
+                        } else if (textStatus === 'parsererror') {
+                             errorMsg = 'Failed to parse the server response. Expected JSON but received something else.';
+                             console.log("Raw response text:", jqXHR.responseText); // Log raw text on parse error
+                        }
+                        showMessage(errorMsg, 'danger');
+                        hideGraph();
+                    },
+                    complete: function() {
+                        // --- Re-enable inputs and buttons ---
+                        const catalogsExist = catalogDropdown.children('option').length > 0;
+                        dataSourceInput.prop('disabled', false);
+                        fetchCatalogsButton.prop('disabled', false);
+                        catalogDropdown.prop('disabled', !catalogsExist);
+                        analyzeButton.prop('disabled', !catalogsExist);
+                    }
+                });
+            });
+
+            // --- Initial State ---
+            catalogDropdown.prop('disabled', true);
+            analyzeButton.prop('disabled', true);
+            hideGraph(); // Ensure graph is hidden on page load
+
+        });
+    </script>
+}

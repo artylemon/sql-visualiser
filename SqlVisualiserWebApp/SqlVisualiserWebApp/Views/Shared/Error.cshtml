@@ -1,0 +1,19 @@
+﻿@{
+    ViewData["Title"] = "Error";
+}
+
+<div class="container mt-5">
+    <h1 class="text-danger text-center">An Error Occurred</h1>
+    <p class="text-center">We encountered an unexpected issue. Please try again later.</p>
+
+    @if (ViewData["ErrorMessage"] != null)
+    {
+        <div class="alert alert-danger text-center">
+            @ViewData["ErrorMessage"]
+        </div>
+    }
+
+    <div class="text-center mt-4">
+        <a href="/" class="btn btn-primary">Return to Home</a>
+    </div>
+</div>
