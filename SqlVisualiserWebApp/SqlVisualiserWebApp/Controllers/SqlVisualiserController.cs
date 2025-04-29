@@ -37,7 +37,10 @@
                 var connectionString = _sqlVisualiserService.BuildConnectionString(dataSource, "master");
                 var catalogs = _sqlVisualiserService.GetCatalogs(connectionString);
 
-                return Json(new { success = true, catalogs });
+                // Order catalogs alphabetically
+                var orderedCatalogs = catalogs.OrderBy(c => c).ToList();
+
+                return Json(new { success = true, catalogs = orderedCatalogs });
             }
             catch (Exception ex)
             {
