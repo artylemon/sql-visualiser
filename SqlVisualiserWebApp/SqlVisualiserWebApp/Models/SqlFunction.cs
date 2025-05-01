@@ -2,7 +2,7 @@ namespace SqlVisualiserWebApp.Models;
 using SqlVisualiserWebApp.Models.Enums;
 using SqlVisualiserWebApp.Models.Interfaces;
 
-public class StoredProcedure : ISqlObject
+public class SqlFunction : ISqlObject
 {
     public string Name
     {
@@ -12,5 +12,5 @@ public class StoredProcedure : ISqlObject
     {
         get; set;
     }
-    public NodeType Type => NodeType.Procedure; // Always return Procedure
+    public NodeType Type => NodeType.Function; // Always return Function
 }

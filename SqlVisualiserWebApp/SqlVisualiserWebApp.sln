@@ -1,9 +1,14 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35919.96 d17.13
+VisualStudioVersion = 17.13.35919.96
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SqlVisualiserWebApp", "SqlVisualiserWebApp\SqlVisualiserWebApp.csproj", "{ACCD0C55-DC15-4C00-8E82-DE15560C4060}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SqlVisualiserWebAppTest", "SqlVisualiserWebAppTest\SqlVisualiserWebAppTest.csproj", "{7DCF91FC-F592-493A-B521-8558AFBD2E81}"
+	ProjectSection(ProjectDependencies) = postProject
+		{ACCD0C55-DC15-4C00-8E82-DE15560C4060} = {ACCD0C55-DC15-4C00-8E82-DE15560C4060}
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +20,10 @@ Global
 		{ACCD0C55-DC15-4C00-8E82-DE15560C4060}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{ACCD0C55-DC15-4C00-8E82-DE15560C4060}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{ACCD0C55-DC15-4C00-8E82-DE15560C4060}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7DCF91FC-F592-493A-B521-8558AFBD2E81}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7DCF91FC-F592-493A-B521-8558AFBD2E81}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7DCF91FC-F592-493A-B521-8558AFBD2E81}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7DCF91FC-F592-493A-B521-8558AFBD2E81}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

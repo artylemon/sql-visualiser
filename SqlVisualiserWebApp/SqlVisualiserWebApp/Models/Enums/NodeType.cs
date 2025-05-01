@@ -4,4 +4,5 @@ public enum NodeType
 {
     Table,
     Procedure,
+    Function,
 }

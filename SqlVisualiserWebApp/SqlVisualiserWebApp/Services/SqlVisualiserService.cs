@@ -5,6 +5,7 @@ namespace SqlVisualiserWebApp.Services
     using Microsoft.Data.SqlClient;
     using System;
     using Microsoft.SqlServer.TransactSql.ScriptDom;
+    using SqlVisualiserWebApp.Models.Interfaces;
 
     public class SqlVisualiserService
     {
@@ -138,6 +139,52 @@ namespace SqlVisualiserWebApp.Services
             return tables;
         }
 
+        public List<SqlFunction> GetFunctions(string connectionString)
+        {
+            var functions = new List<SqlFunction>();
+
+            try
+            {
+                using (var connection = new SqlConnection(connectionString))
+                {
+                    connection.Open();
+                    string query = @"
+                        SELECT o.name, m.definition
+                        FROM sys.objects o
+                        JOIN sys.sql_modules m ON o.object_id = m.object_id
+                        WHERE o.type IN ('FN', 'TF')";
+
+                    var command = new SqlCommand(query, connection);
+                    using (var reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string functionName = reader.GetString(0);
+                            string definition = reader.GetString(1);
+                            functions.Add(new SqlFunction { Name = functionName, Definition = definition });
+                        }
+                    }
+                }
+            }
+            catch (SqlException ex)
+            {
+                _logger.LogError(ex, "Error retrieving functions from the database.");
+                throw new InvalidOperationException("Failed to retrieve functions.", ex);
+            }
+
+            return functions;
+        }
+
+        public List<ISqlObject> GetSqlObjects(string connectionString)
+        {
+            var sqlObjects = new List<ISqlObject>();
+
+            sqlObjects.AddRange(GetStoredProcedures(connectionString));
+            sqlObjects.AddRange(GetFunctions(connectionString));
+
+            return sqlObjects;
+        }
+
         public Dictionary<string, GraphNode> BuildDatabaseGraph(string connectionString)
         {
             try
@@ -188,32 +235,32 @@ namespace SqlVisualiserWebApp.Services
         {
             try
             {
-                _logger.LogInformation($"Starting directed database analysis. With the conenction string {connectionString}");
+                _logger.LogInformation($"Starting directed database analysis with the connection string: {connectionString}");
 
-                // Step 1: Retrieve stored procedures and tables
-                var storedProcedures = GetStoredProcedures(connectionString);
+                // Step 1: Retrieve tables and SQL objects (procedures and functions)
                 var tables = GetTables(connectionString);
+                var sqlObjects = GetSqlObjects(connectionString);
 
                 // Step 2: Initialize the DirectedCombinedVisitor
-                var procedureNames = storedProcedures.Select(sp => sp.Name).ToList();
-                var directedVisitor = new DirectedCombinedVisitor(tables, procedureNames);
+                var directedVisitor = new DirectedCombinedVisitor(tables, sqlObjects);
 
                 // Step 3: Create a single instance of TSql150Parser
                 var parser = new TSql150Parser(false);
 
-                // Step 4: Parse each stored procedure and build the directed graph
-                foreach (var procedure in storedProcedures)
+                // Step 4: Parse each SQL object and build the directed graph
+                foreach (var sqlObject in sqlObjects)
                 {
-                    directedVisitor.SetCurrentProcedure(procedure.Name);
+                    directedVisitor.SetCurrentNode(sqlObject);
 
-                    using (var reader = new StringReader(procedure.Definition))
+                    using (var reader = new StringReader(sqlObject.Definition))
                     {
                         var fragment = parser.Parse(reader, out var errors);
 
                         if (errors != null && errors.Count > 0)
                         {
-                            _logger.LogWarning("Parsing errors in procedure {ProcedureName}: {Errors}", procedure.Name, string.Join(", ", errors.Select(e => e.Message)));
-                            continue; // Skip this procedure if there are parsing errors
+                            _logger.LogWarning("Parsing errors in {ObjectType} {ObjectName}: {Errors}",
+                                sqlObject.Type, sqlObject.Name, string.Join(", ", errors.Select(e => e.Message)));
+                            continue; // Skip this object if there are parsing errors
                         }
 
                         fragment.Accept(directedVisitor);
