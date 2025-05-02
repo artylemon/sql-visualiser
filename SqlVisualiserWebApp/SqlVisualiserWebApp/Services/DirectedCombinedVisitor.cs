@@ -4,23 +4,38 @@ using Microsoft.SqlServer.TransactSql.ScriptDom;
 using SqlVisualiserWebApp.Models;
 using SqlVisualiserWebApp.Models.Enums;
 using SqlVisualiserWebApp.Models.Interfaces;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 
 public class DirectedCombinedVisitor : TSqlFragmentVisitor
 {
     private readonly HashSet<string> _tables;
     private readonly List<ISqlObject> _sqlObjects;
-    private string _currentNodeName;
+    private string _currentNodeName = string.Empty;
+    private readonly TSql150Parser _dynamicSqlParser;
+    // *** NEW: Track the target table of the current DML operation ***
+    private string? _currentDmlTargetTable = null;
 
     public Dictionary<string, DirectedGraphNode> Graph { get; } = new Dictionary<string, DirectedGraphNode>(StringComparer.OrdinalIgnoreCase);
 
     public DirectedCombinedVisitor(List<string> tables, List<ISqlObject> sqlObjects)
     {
-        _tables = new HashSet<string>(tables, StringComparer.OrdinalIgnoreCase); // Case-insensitive table names
-        _sqlObjects = sqlObjects;
+        _sqlObjects = sqlObjects ?? throw new ArgumentNullException(nameof(sqlObjects));
+        _tables = new HashSet<string>(tables ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        _dynamicSqlParser = new TSql150Parser(false);
     }
 
     public void SetCurrentNode(ISqlObject sqlObject)
     {
+        if (sqlObject == null || string.IsNullOrWhiteSpace(sqlObject.Name))
+        {
+            Console.Error.WriteLine("Attempted to set current node with null or empty name.");
+            _currentNodeName = string.Empty;
+            return;
+        }
+
         _currentNodeName = sqlObject.Name;
         if (!Graph.ContainsKey(_currentNodeName))
         {
@@ -28,245 +43,360 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         }
     }
 
-    public override void Visit(NamedTableReference node)
+    // Helper: Data flows FROM source TO consumer
+    private void AddDataFlowDependency(string sourceOfDataNodeName, NodeType sourceOfDataType, string consumerNodeName)
     {
-        var objectName = node.SchemaObject.BaseIdentifier.Value;
-
-        // Check if the object is a table
-        if (_tables.Contains(objectName))
+        if (string.IsNullOrWhiteSpace(consumerNodeName) || !Graph.ContainsKey(consumerNodeName))
         {
-            if (!Graph.ContainsKey(objectName))
-            {
-                Graph[objectName] = new DirectedGraphNode(objectName, NodeType.Table);
-            }
-
-            Graph[_currentNodeName].InNodes.Add(objectName); // Reading from the table
-            Graph[objectName].OutNodes.Add(_currentNodeName); // Procedure reads from the table
+            Console.Error.WriteLine($"Consumer node '{consumerNodeName ?? "NULL"}' not found for data flow from '{sourceOfDataNodeName}'.");
+            return;
         }
-        else
-        {
-            // Check if the object is a known SQL object (e.g., function)
-            var sqlObject = GetSqlObjectByName(objectName);
-            if (sqlObject != null)
-            {
-                if (!Graph.ContainsKey(objectName))
-                {
-                    Graph[objectName] = new DirectedGraphNode(objectName, sqlObject.Type);
-                }
 
-                Graph[_currentNodeName].InNodes.Add(objectName); // Current node calls the SQL object
-                Graph[objectName].OutNodes.Add(_currentNodeName); // SQL object is called by the current node
+        if (!Graph.ContainsKey(sourceOfDataNodeName))
+        {
+            Graph[sourceOfDataNodeName] = new DirectedGraphNode(sourceOfDataNodeName, sourceOfDataType);
+        }
+
+        Graph[sourceOfDataNodeName].OutNodes.Add(consumerNodeName);
+        Graph[consumerNodeName].InNodes.Add(sourceOfDataNodeName);
+    }
+
+    // Helper: Data is written/modified FROM modifier TO target
+    private void AddDataWriteDependency(string modifierNodeName, string targetNodeName, NodeType targetNodeType)
+    {
+        if (string.IsNullOrWhiteSpace(modifierNodeName) || !Graph.ContainsKey(modifierNodeName))
+        {
+            Console.Error.WriteLine($"Modifier node '{modifierNodeName ?? "NULL"}' not found for data write to '{targetNodeName}'.");
+            return;
+        }
+
+        if (!Graph.ContainsKey(targetNodeName))
+        {
+            Graph[targetNodeName] = new DirectedGraphNode(targetNodeName, targetNodeType);
+        }
+
+        Graph[modifierNodeName].OutNodes.Add(targetNodeName);
+        Graph[targetNodeName].InNodes.Add(modifierNodeName);
+    }
+
+    // Catch SCALAR function calls (in WHERE, SELECT list, SET, etc.)
+    public override void Visit(FunctionCall node)
+    {
+        var functionName = node.FunctionName?.Value;
+        if (!string.IsNullOrWhiteSpace(_currentNodeName) && !string.IsNullOrWhiteSpace(functionName))
+        {
+            var sqlObject = GetSqlObjectByName(functionName);
+            if (sqlObject != null && (sqlObject.Type == NodeType.Function || sqlObject.Type == NodeType.Function))
+            {
+                AddDataFlowDependency(functionName, sqlObject.Type, _currentNodeName);
             }
         }
 
         base.Visit(node);
     }
 
-    public override void Visit(InsertStatement node)
+    // Catch TABLE-VALUED function calls in FROM/JOIN clauses (if parser identifies them as such)
+    public override void Visit(SchemaObjectFunctionTableReference node)
     {
-        if (node.InsertSpecification.Target is NamedTableReference namedTable)
+        // Console.WriteLine($"DEBUG: Entered Visit(SchemaObjectFunctionTableReference) for node: {node.SchemaObject?.BaseIdentifier?.Value}");
+        var functionName = node.SchemaObject?.BaseIdentifier?.Value;
+        if (!string.IsNullOrWhiteSpace(_currentNodeName) && !string.IsNullOrWhiteSpace(functionName))
         {
-            var tableName = namedTable.SchemaObject.BaseIdentifier.Value;
-            if (_tables.Contains(tableName))
+            var sqlObject = GetSqlObjectByName(functionName);
+            if (sqlObject != null && (sqlObject.Type == NodeType.Function || sqlObject.Type == NodeType.Function))
             {
-                if (!Graph.ContainsKey(tableName))
-                {
-                    Graph[tableName] = new DirectedGraphNode(tableName, NodeType.Table);
-                }
-                Graph[_currentNodeName].OutNodes.Add(tableName); // Writing to the table
-                Graph[tableName].InNodes.Add(_currentNodeName); // Procedure writes to the table
+                // Console.WriteLine($"DEBUG: Adding DataFlowDependency (TVF): {functionName} -> {_currentNodeName}");
+                AddDataFlowDependency(functionName, sqlObject.Type, _currentNodeName);
             }
         }
 
         base.Visit(node);
+    }
+
+    // Handles references to actual TABLES, VIEWS, or FUNCTIONS referenced with table-like syntax
+    public override void Visit(NamedTableReference node)
+    {
+        var objectName = node.SchemaObject?.BaseIdentifier?.Value;
+        // Console.WriteLine($"DEBUG: Entered Visit(NamedTableReference) for node: {objectName}. Current DML Target: {_currentDmlTargetTable}");
+
+        if (!string.IsNullOrWhiteSpace(_currentNodeName) && !string.IsNullOrWhiteSpace(objectName))
+        {
+            // *** MODIFIED: Check if this reference is the target of the current DML operation ***
+            bool isCurrentDmlTarget = !string.IsNullOrWhiteSpace(_currentDmlTargetTable) &&
+                                      objectName.Equals(_currentDmlTargetTable, StringComparison.OrdinalIgnoreCase);
+
+            if (_tables.Contains(objectName))
+            {
+                // Only add data flow dependency (read) if it's NOT the table being modified by the parent DML statement
+                if (!isCurrentDmlTarget)
+                {
+                    // Console.WriteLine($"DEBUG: '{objectName}' identified as a TABLE (not DML target). Adding DataFlowDependency: {objectName} -> {_currentNodeName}");
+                    AddDataFlowDependency(objectName, NodeType.Table, _currentNodeName);
+                }
+                else
+                {
+                    // Console.WriteLine($"DEBUG: '{objectName}' identified as a TABLE, but IS current DML target. Skipping read dependency.");
+                }
+            }
+            else
+            {
+                var sqlObject = GetSqlObjectByName(objectName);
+                if (sqlObject != null && (sqlObject.Type == NodeType.Function || sqlObject.Type == NodeType.Function))
+                {
+                    // Console.WriteLine($"DEBUG: '{objectName}' identified as a FUNCTION (Type: {sqlObject.Type}). Adding DataFlowDependency: {objectName} -> {_currentNodeName}");
+                    AddDataFlowDependency(objectName, sqlObject.Type, _currentNodeName);
+                }
+                // else: Not a known table or function
+            }
+        }
+
+        base.Visit(node);
+    }
+
+    // Visit SELECT to ensure contained elements are processed
+    public override void Visit(SelectStatement node)
+    {
+        if (string.IsNullOrWhiteSpace(_currentNodeName))
+        {
+            base.Visit(node);
+            return;
+        }
+
+        base.Visit(node);
+    }
+
+    // --- DML Statements ---
+    public override void Visit(InsertStatement node)
+    {
+        string? originalDmlTarget = _currentDmlTargetTable; // Store previous value (for nesting, though unlikely)
+        _currentDmlTargetTable = null; // Reset for this specific statement
+
+        if (string.IsNullOrWhiteSpace(_currentNodeName))
+        {
+            base.Visit(node);
+            return;
+        }
+
+        if (node.InsertSpecification?.Target is NamedTableReference namedTable)
+        {
+            var tableName = namedTable.SchemaObject?.BaseIdentifier?.Value;
+            if (!string.IsNullOrWhiteSpace(tableName) && _tables.Contains(tableName))
+            {
+                AddDataWriteDependency(_currentNodeName, tableName, NodeType.Table);
+                _currentDmlTargetTable = tableName; // Set context for children
+            }
+        }
+
+        try
+        {
+            base.Visit(node); // Visit children (VALUES, SELECT source)
+        }
+        finally
+        {
+            _currentDmlTargetTable = originalDmlTarget; // Restore previous context
+        }
     }
 
     public override void Visit(UpdateStatement node)
     {
-        if (node.UpdateSpecification.Target is NamedTableReference namedTable)
+        string? originalDmlTarget = _currentDmlTargetTable;
+        _currentDmlTargetTable = null;
+
+        if (string.IsNullOrWhiteSpace(_currentNodeName))
         {
-            var tableName = namedTable.SchemaObject.BaseIdentifier.Value;
-            if (_tables.Contains(tableName))
+            base.Visit(node);
+            return;
+        }
+
+        if (node.UpdateSpecification?.Target is NamedTableReference namedTable)
+        {
+            var tableName = namedTable.SchemaObject?.BaseIdentifier?.Value;
+            if (!string.IsNullOrWhiteSpace(tableName) && _tables.Contains(tableName))
             {
-                if (!Graph.ContainsKey(tableName))
-                {
-                    Graph[tableName] = new DirectedGraphNode(tableName, NodeType.Table);
-                }
-                Graph[tableName].OutNodes.Add(_currentNodeName); // Writing to the table
-                Graph[_currentNodeName].InNodes.Add(tableName); // Procedure writes to the table
+                AddDataWriteDependency(_currentNodeName, tableName, NodeType.Table);
+                _currentDmlTargetTable = tableName; // Set context for children (FROM, WHERE, SET)
             }
         }
-        base.Visit(node);
+
+        try
+        {
+            base.Visit(node); // Visit SET, WHERE, FROM etc.
+        }
+        finally
+        {
+            _currentDmlTargetTable = originalDmlTarget; // Restore previous context
+        }
     }
 
     public override void Visit(DeleteStatement node)
     {
-        if (node.DeleteSpecification.Target is NamedTableReference namedTable)
+        string? originalDmlTarget = _currentDmlTargetTable;
+        _currentDmlTargetTable = null;
+
+        if (string.IsNullOrWhiteSpace(_currentNodeName))
         {
-            var tableName = namedTable.SchemaObject.BaseIdentifier.Value;
-            if (_tables.Contains(tableName))
+            base.Visit(node);
+            return;
+        }
+
+        if (node.DeleteSpecification?.Target is NamedTableReference namedTable)
+        {
+            var tableName = namedTable.SchemaObject?.BaseIdentifier?.Value;
+            if (!string.IsNullOrWhiteSpace(tableName) && _tables.Contains(tableName))
             {
-                if (!Graph.ContainsKey(tableName))
-                {
-                    Graph[tableName] = new DirectedGraphNode(tableName, NodeType.Table);
-                }
-                Graph[_currentNodeName].OutNodes.Add(tableName); // Writing to the table
-                Graph[tableName].InNodes.Add(_currentNodeName); // Procedure writes to the table
+                AddDataWriteDependency(_currentNodeName, tableName, NodeType.Table);
+                _currentDmlTargetTable = tableName; // Set context for children (WHERE, FROM)
             }
         }
-        base.Visit(node);
+
+        try
+        {
+            base.Visit(node); // Visit WHERE, FROM etc.
+        }
+        finally
+        {
+            _currentDmlTargetTable = originalDmlTarget; // Restore previous context
+        }
     }
 
     public override void Visit(MergeStatement node)
     {
-        if (node.MergeSpecification.Target is NamedTableReference namedTable)
+        string? originalDmlTarget = _currentDmlTargetTable;
+        _currentDmlTargetTable = null;
+
+        if (string.IsNullOrWhiteSpace(_currentNodeName))
         {
-            var tableName = namedTable.SchemaObject.BaseIdentifier.Value;
-            if (_tables.Contains(tableName))
+            base.Visit(node);
+            return;
+        }
+
+        if (node.MergeSpecification?.Target is NamedTableReference namedTable)
+        {
+            var tableName = namedTable.SchemaObject?.BaseIdentifier?.Value;
+            if (!string.IsNullOrWhiteSpace(tableName) && _tables.Contains(tableName))
             {
-                if (!Graph.ContainsKey(tableName))
-                {
-                    Graph[tableName] = new DirectedGraphNode(tableName, NodeType.Table);
-                }
-                Graph[_currentNodeName].OutNodes.Add(tableName); // Writing to the table
-                Graph[tableName].InNodes.Add(_currentNodeName); // Procedure writes to the table
+                AddDataWriteDependency(_currentNodeName, tableName, NodeType.Table);
+                _currentDmlTargetTable = tableName; // Set context for children (USING, WHEN clauses)
             }
         }
-        base.Visit(node);
+
+        try
+        {
+            base.Visit(node); // Visit USING, WHEN MATCHED etc.
+        }
+        finally
+        {
+            _currentDmlTargetTable = originalDmlTarget; // Restore previous context
+        }
     }
 
+    // EXECUTE statement handling (Caller -> Callee dependency)
     public override void Visit(ExecuteStatement node)
     {
-        // Case 1: Directly executing a stored procedure
-        if (node.ExecuteSpecification.ExecutableEntity is ExecutableProcedureReference procedureReference)
+        if (string.IsNullOrWhiteSpace(_currentNodeName))
         {
-            var procedureName = procedureReference.ProcedureReference.ProcedureReference.Name.BaseIdentifier.Value;
-            HandleSqlObjectReference(procedureName);
+            base.Visit(node);
+            return;
         }
-        // Case 2: Executing dynamic SQL
-        else if (node.ExecuteSpecification.ExecutableEntity is ExecutableStringList stringList)
+
+        if (node.ExecuteSpecification?.ExecutableEntity is ExecutableProcedureReference procedureReference)
+        {
+            var procedureName = procedureReference.ProcedureReference?.ProcedureReference?.Name?.BaseIdentifier?.Value;
+            if (!string.IsNullOrWhiteSpace(procedureName))
+            {
+                HandlePotentialDependency(procedureName);
+            }
+        }
+        else if (node.ExecuteSpecification?.ExecutableEntity is ExecutableStringList stringList)
         {
             foreach (var sqlString in stringList.Strings)
             {
-                // Attempt to parse the dynamic SQL and extract references
-                HandleDynamicSql(sqlString);
+                if (sqlString is ValueExpression valExpr)
+                {
+                    HandleDynamicSql(valExpr);
+                }
             }
         }
 
         base.Visit(node);
     }
 
-    public override void Visit(SelectStatement node)
+    // --- Helper Methods ---
+    private ISqlObject? GetSqlObjectByName(string name)
     {
-        if (node.QueryExpression is QuerySpecification querySpecification)
+        if (string.IsNullOrWhiteSpace(name))
         {
-            // Handle function calls in the SELECT list
-            if (querySpecification.SelectElements != null)
-            {
-                foreach (var selectElement in querySpecification.SelectElements)
-                {
-                    if (selectElement is SelectScalarExpression scalarExpression &&
-                        scalarExpression.Expression is FunctionCall functionCall)
-                    {
-                        var functionName = functionCall.FunctionName.Value;
-                        var sqlObject = GetSqlObjectByName(functionName);
-
-                        if (sqlObject != null)
-                        {
-                            if (!Graph.ContainsKey(functionName))
-                            {
-                                Graph[functionName] = new DirectedGraphNode(functionName, sqlObject.Type);
-                            }
-                            Graph[_currentNodeName].InNodes.Add(functionName); // Current node calls the function
-                            Graph[functionName].OutNodes.Add(_currentNodeName); // Function is called by the current node
-                        }
-                    }
-                }
-            }
-
-            // Handle function calls in the FROM clause
-            if (querySpecification.FromClause?.TableReferences != null)
-            {
-                foreach (var tableReference in querySpecification.FromClause.TableReferences)
-                {
-                    if (tableReference is SchemaObjectFunctionTableReference functionTableReference)
-                    {
-                        var functionName = functionTableReference.SchemaObject.BaseIdentifier.Value;
-                        var sqlObject = GetSqlObjectByName(functionName);
-
-                        if (sqlObject != null)
-                        {
-                            if (!Graph.ContainsKey(functionName))
-                            {
-                                Graph[functionName] = new DirectedGraphNode(functionName, sqlObject.Type);
-                            }
-                            Graph[_currentNodeName].InNodes.Add(functionName); // Current node calls the function
-                            Graph[functionName].OutNodes.Add(_currentNodeName); // Function is called by the current node
-                        }
-                    }
-                    else if (tableReference is NamedTableReference namedTableReference)
-                    {
-                        var tableName = namedTableReference.SchemaObject.BaseIdentifier.Value;
-                        if (_tables.Contains(tableName))
-                        {
-                            if (!Graph.ContainsKey(tableName))
-                            {
-                                Graph[tableName] = new DirectedGraphNode(tableName, NodeType.Table);
-                            }
-                            Graph[_currentNodeName].InNodes.Add(tableName); // Reading from the table
-                            Graph[tableName].OutNodes.Add(_currentNodeName); // Table is read by the current node
-                        }
-                    }
-                }
-            }
+            return null;
         }
 
-        base.Visit(node);
+        return _sqlObjects.FirstOrDefault(obj => string.Equals(obj.Name, name, StringComparison.OrdinalIgnoreCase));
     }
 
-    private ISqlObject GetSqlObjectByName(string name)
+    // Handles CALLER -> CALLEE dependencies (e.g., for EXEC)
+    private void HandlePotentialDependency(string calleeName)
     {
-        // Use StringComparer.OrdinalIgnoreCase for robust case-insensitive comparison
-        return _sqlObjects.FirstOrDefault(obj =>
-            string.Equals(obj.Name, name, StringComparison.OrdinalIgnoreCase));
-    }
+        if (string.IsNullOrWhiteSpace(_currentNodeName) || string.IsNullOrWhiteSpace(calleeName))
+        {
+            return;
+        }
 
-    private void HandleSqlObjectReference(string objectName)
-    {
-        var sqlObject = GetSqlObjectByName(objectName);
-
+        var sqlObject = GetSqlObjectByName(calleeName);
         if (sqlObject != null)
         {
-            if (!Graph.ContainsKey(objectName))
+            if (!Graph.ContainsKey(calleeName))
             {
-                Graph[objectName] = new DirectedGraphNode(objectName, sqlObject.Type);
+                Graph[calleeName] = new DirectedGraphNode(calleeName, sqlObject.Type);
             }
 
-            Graph[_currentNodeName].OutNodes.Add(objectName); // Current node calls another node
-            Graph[objectName].InNodes.Add(_currentNodeName); // Called node is referenced
+            Graph[_currentNodeName].OutNodes.Add(calleeName);
+            Graph[calleeName].InNodes.Add(_currentNodeName);
         }
     }
 
+    // Dynamic SQL parsing (use with caution)
     private void HandleDynamicSql(ValueExpression sqlExpression)
     {
-        // Use TSql150Parser to parse the dynamic SQL
-        var parser = new TSql150Parser(false);
-        using (var reader = new StringReader(sqlExpression.ScriptTokenStream
-            .Skip(sqlExpression.FirstTokenIndex)
-            .Take(sqlExpression.LastTokenIndex - sqlExpression.FirstTokenIndex + 1)
-            .Aggregate(string.Empty, (current, token) => current + token.Text)))
+        if (sqlExpression == null || sqlExpression.ScriptTokenStream == null)
         {
-            var fragment = parser.Parse(reader, out var errors);
+            return;
+        }
 
-            if (errors != null && errors.Count > 0)
+        try
+        {
+            string dynamicSql = string.Join("", sqlExpression.ScriptTokenStream
+                .Skip(sqlExpression.FirstTokenIndex).Take(sqlExpression.LastTokenIndex - sqlExpression.FirstTokenIndex + 1).Select(t => t.Text));
+            if (dynamicSql.StartsWith("'") && dynamicSql.EndsWith("'"))
             {
-                // Log or handle parsing errors
+                dynamicSql = dynamicSql.Substring(1, dynamicSql.Length - 2).Replace("''", "'");
+            }
+            else if (dynamicSql.StartsWith("N'") && dynamicSql.EndsWith("'"))
+            {
+                dynamicSql = dynamicSql.Substring(2, dynamicSql.Length - 3).Replace("''", "'");
+            }
+
+            if (string.IsNullOrWhiteSpace(dynamicSql))
+            {
                 return;
             }
 
-            // Visit the parsed fragment to extract references
-            fragment.Accept(this);
+            using (var reader = new StringReader(dynamicSql))
+            {
+                var fragment = _dynamicSqlParser.Parse(reader, out var errors);
+                if (errors != null && errors.Count > 0)
+                {
+                    Console.Error.WriteLine($"Errors parsing dynamic SQL within {_currentNodeName}: {string.Join("; ", errors.Select(e => e.Message))}");
+                    return;
+                }
+
+                if (fragment != null)
+                {
+                    fragment.Accept(this);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Exception parsing dynamic SQL within {_currentNodeName}: {ex.Message}");
         }
     }
-
 }
