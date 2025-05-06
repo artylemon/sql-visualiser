@@ -2,7 +2,13 @@ namespace SqlVisualiserWebApp.Models
 {
     public class AnalysisRequest
     {
-        public string DataSource { get; set; }
-        public string Catalog { get; set; }
+        public string DataSource
+        {
+            get; set;
+        }
+        public List<string> Catalogs
+        {
+            get; set;
+        }
     }
 }

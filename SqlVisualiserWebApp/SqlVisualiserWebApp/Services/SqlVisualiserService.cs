@@ -13,7 +13,7 @@ namespace SqlVisualiserWebApp.Services
 
         public SqlVisualiserService(ILogger<SqlVisualiserService> logger)
         {
-            _logger = logger;
+            this._logger = logger;
         }
 
         public string BuildConnectionString(string dataSource, string initialCatalog)
@@ -66,14 +66,14 @@ namespace SqlVisualiserWebApp.Services
             }
             catch (SqlException ex)
             {
-                _logger.LogError(ex, "Error retrieving catalogs from the database.");
+                this._logger.LogError(ex, "Error retrieving catalogs from the database.");
                 throw;
             }
 
             return catalogs;
         }
 
-        public List<StoredProcedure> GetStoredProcedures(string connectionString)
+        public List<StoredProcedure> GetStoredProcedures(string connectionString, string catalog)
         {
             var procedures = new List<StoredProcedure>();
 
@@ -83,63 +83,79 @@ namespace SqlVisualiserWebApp.Services
                 {
                     connection.Open();
                     string query = @"
-                        SELECT p.name, m.definition
+                        SELECT s.name AS SchemaName, p.name AS ProcedureName, m.definition
                         FROM sys.procedures p
-                        JOIN sys.sql_modules m ON p.object_id = m.object_id";
+                        JOIN sys.sql_modules m ON p.object_id = m.object_id
+                        JOIN sys.schemas s ON p.schema_id = s.schema_id";
 
                     var command = new SqlCommand(query, connection);
                     using (var reader = command.ExecuteReader())
                     {
                         while (reader.Read())
                         {
-                            string procName = reader.GetString(0);
-                            string definition = reader.GetString(1);
-                            procedures.Add(new StoredProcedure { Name = procName, Definition = definition });
+                            string schemaName = reader.GetString(0);
+                            string procName = reader.GetString(1);
+                            string definition = reader.GetString(2);
+
+                            // Create a new StoredProcedure object and set the catalog
+                            procedures.Add(new StoredProcedure
+                            {
+                                Schema = schemaName,
+                                Name = procName,
+                                Definition = definition,
+                                Catalog = catalog
+                            });
                         }
                     }
                 }
             }
             catch (SqlException ex)
             {
-                _logger.LogError(ex, "Error retrieving stored procedures from the database.");
+                this._logger.LogError(ex, "Error retrieving stored procedures from the database.");
                 throw new InvalidOperationException("Failed to retrieve stored procedures.", ex);
             }
 
             return procedures;
         }
 
-        public List<string> GetTables(string connectionString)
+        public List<SqlTable> GetTables(string connectionString, string catalog)
         {
-            var tables = new List<string>();
+            var tables = new List<SqlTable>();
 
             try
             {
                 using (var connection = new SqlConnection(connectionString))
                 {
                     connection.Open();
-                    string query = "SELECT name FROM sys.tables";
+                    string query = @"
+                        SELECT s.name AS SchemaName, t.name AS TableName
+                        FROM sys.tables t
+                        JOIN sys.schemas s ON t.schema_id = s.schema_id";
 
                     var command = new SqlCommand(query, connection);
                     using (var reader = command.ExecuteReader())
                     {
                         while (reader.Read())
                         {
-                            string tableName = reader.GetString(0);
-                            tables.Add(tableName);
+                            string schemaName = reader.GetString(0);
+                            string tableName = reader.GetString(1);
+
+                            // Create a new Table object and add it to the list
+                            tables.Add(new SqlTable { Name = tableName, Schema = schemaName, Catalog = catalog });
                         }
                     }
                 }
             }
             catch (SqlException ex)
             {
-                _logger.LogError(ex, "Error retrieving tables from the database.");
+                this._logger.LogError(ex, "Error retrieving tables from the database.");
                 throw new InvalidOperationException("Failed to retrieve tables.", ex);
             }
 
             return tables;
         }
 
-        public List<SqlFunction> GetFunctions(string connectionString)
+        public List<SqlFunction> GetFunctions(string connectionString, string catalog)
         {
             var functions = new List<SqlFunction>();
 
@@ -149,9 +165,10 @@ namespace SqlVisualiserWebApp.Services
                 {
                     connection.Open();
                     string query = @"
-                        SELECT o.name, m.definition
+                        SELECT s.name AS SchemaName, o.name AS FunctionName, m.definition
                         FROM sys.objects o
                         JOIN sys.sql_modules m ON o.object_id = m.object_id
+                        JOIN sys.schemas s ON o.schema_id = s.schema_id
                         WHERE o.type IN ('FN', 'TF')";
 
                     var command = new SqlCommand(query, connection);
@@ -159,90 +176,58 @@ namespace SqlVisualiserWebApp.Services
                     {
                         while (reader.Read())
                         {
-                            string functionName = reader.GetString(0);
-                            string definition = reader.GetString(1);
-                            functions.Add(new SqlFunction { Name = functionName, Definition = definition });
+                            string schemaName = reader.GetString(0);
+                            string functionName = reader.GetString(1);
+                            string definition = reader.GetString(2);
+
+                            // Create a new SqlFunction object and set the catalog
+                            functions.Add(new SqlFunction
+                            {
+                                Schema = schemaName,
+                                Name = functionName,
+                                Definition = definition,
+                                Catalog = catalog
+                            });
                         }
                     }
                 }
             }
             catch (SqlException ex)
             {
-                _logger.LogError(ex, "Error retrieving functions from the database.");
+                this._logger.LogError(ex, "Error retrieving functions from the database.");
                 throw new InvalidOperationException("Failed to retrieve functions.", ex);
             }
 
             return functions;
         }
 
-        public List<ISqlObject> GetSqlObjects(string connectionString)
+        public List<ISqlObject> GetSqlObjects(string connectionString, string catalog)
         {
             var sqlObjects = new List<ISqlObject>();
 
-            sqlObjects.AddRange(GetStoredProcedures(connectionString));
-            sqlObjects.AddRange(GetFunctions(connectionString));
+            // Retrieve stored procedures and assign the catalog
+            sqlObjects.AddRange(this.GetStoredProcedures(connectionString, catalog));
+
+            // Retrieve functions and assign the catalog
+            sqlObjects.AddRange(this.GetFunctions(connectionString, catalog));
+
+            // Retrieve tables and assign the catalog
+            sqlObjects.AddRange(this.GetTables(connectionString, catalog));
 
             return sqlObjects;
         }
 
-        public Dictionary<string, GraphNode> BuildDatabaseGraph(string connectionString)
+        public Dictionary<string, DirectedGraphNode> BuildDirectedDatabaseGraph(string connectionString, string catalog)
         {
             try
             {
-                _logger.LogInformation("Starting database analysis.");
+                this._logger.LogInformation($"Starting directed database analysis for catalog: {catalog}");
 
-                // Step 1: Retrieve stored procedures and tables
-                var storedProcedures = GetStoredProcedures(connectionString);
-                var tables = GetTables(connectionString);
-
-                // Step 2: Initialize the CombinedVisitor
-                var procedureNames = storedProcedures.Select(sp => sp.Name).ToList();
-                var combinedVisitor = new CombinedVisitor(tables, procedureNames);
-
-                // Step 3: Create a single instance of TSql150Parser
-                var parser = new TSql150Parser(false);
-
-                // Step 4: Parse each stored procedure and build the graph
-                foreach (var procedure in storedProcedures)
-                {
-                    combinedVisitor.SetCurrentProcedure(procedure.Name);
-
-                    using (var reader = new StringReader(procedure.Definition))
-                    {
-                        var fragment = parser.Parse(reader, out var errors);
-
-                        if (errors != null && errors.Count > 0)
-                        {
-                            _logger.LogWarning("Parsing errors in procedure {ProcedureName}: {Errors}", procedure.Name, string.Join(", ", errors.Select(e => e.Message)));
-                            continue; // Skip this procedure if there are parsing errors
-                        }
-
-                        fragment.Accept(combinedVisitor);
-                    }
-                }
-
-                _logger.LogInformation("Database analysis completed successfully.");
-                return combinedVisitor.Graph;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "An error occurred during database analysis.");
-                throw new InvalidOperationException("Database analysis failed.", ex);
-            }
-        }
-
-        public Dictionary<string, DirectedGraphNode> BuildDirectedDatabaseGraph(string connectionString)
-        {
-            try
-            {
-                _logger.LogInformation($"Starting directed database analysis with the connection string: {connectionString}");
-
-                // Step 1: Retrieve tables and SQL objects (procedures and functions)
-                var tables = GetTables(connectionString);
-                var sqlObjects = GetSqlObjects(connectionString);
+                // Step 1: Retrieve all SQL objects (tables, stored procedures, and functions)
+                var sqlObjects = this.GetSqlObjects(connectionString, catalog);
 
                 // Step 2: Initialize the DirectedCombinedVisitor
-                var directedVisitor = new DirectedCombinedVisitor(tables, sqlObjects);
+                var directedVisitor = new DirectedCombinedVisitor(sqlObjects);
 
                 // Step 3: Create a single instance of TSql150Parser
                 var parser = new TSql150Parser(false);
@@ -258,7 +243,7 @@ namespace SqlVisualiserWebApp.Services
 
                         if (errors != null && errors.Count > 0)
                         {
-                            _logger.LogWarning("Parsing errors in {ObjectType} {ObjectName}: {Errors}",
+                            this._logger.LogWarning("Parsing errors in {ObjectType} {ObjectName}: {Errors}",
                                 sqlObject.Type, sqlObject.Name, string.Join(", ", errors.Select(e => e.Message)));
                             continue; // Skip this object if there are parsing errors
                         }
@@ -267,13 +252,13 @@ namespace SqlVisualiserWebApp.Services
                     }
                 }
 
-                _logger.LogInformation("Directed database analysis completed successfully.");
+                this._logger.LogInformation($"Directed database analysis for catalog {catalog} completed successfully.");
                 return directedVisitor.Graph;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An error occurred during directed database analysis.");
-                throw new InvalidOperationException("Directed database analysis failed.", ex);
+                this._logger.LogError(ex, $"An error occurred during directed database analysis for catalog {catalog}.");
+                throw new InvalidOperationException($"Directed database analysis for catalog {catalog} failed.", ex);
             }
         }
     }
