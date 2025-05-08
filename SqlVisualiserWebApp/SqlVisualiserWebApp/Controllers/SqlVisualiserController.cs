@@ -12,40 +12,40 @@
 
         public SqlVisualiserController(SqlVisualiserService sqlVisualiserService, ILogger<SqlVisualiserController> logger)
         {
-            _sqlVisualiserService = sqlVisualiserService ?? throw new ArgumentNullException(nameof(sqlVisualiserService));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            this._sqlVisualiserService = sqlVisualiserService ?? throw new ArgumentNullException(nameof(sqlVisualiserService));
+            this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         public IActionResult Index()
         {
-            _logger.LogInformation("Rendering the Index view.");
-            return View();
+            this._logger.LogInformation("Rendering the Index view.");
+            return this.View();
         }
 
-        [HttpPost]
-        public IActionResult GetCatalogs([FromBody] string dataSource)
+        [HttpGet]
+        public IActionResult Catalogs([FromQuery] string dataSource)
         {
             if (string.IsNullOrWhiteSpace(dataSource))
             {
-                _logger.LogWarning("Data source is empty or null.");
-                return Json(new { success = false, message = "Data source cannot be empty." });
+                this._logger.LogWarning("Data source is empty or null.");
+                return this.Json(new { success = false, message = "Data source cannot be empty." });
             }
 
             try
             {
-                _logger.LogInformation("Fetching catalogs for the provided data source.");
-                var connectionString = _sqlVisualiserService.BuildConnectionString(dataSource, "master");
-                var catalogs = _sqlVisualiserService.GetCatalogs(connectionString);
+                this._logger.LogInformation("Fetching catalogs for the provided data source.");
+                var connectionString = this._sqlVisualiserService.BuildConnectionString(dataSource, "master");
+                var catalogs = this._sqlVisualiserService.GetCatalogs(connectionString);
 
                 // Order catalogs alphabetically
                 var orderedCatalogs = catalogs.OrderBy(c => c).ToList();
 
-                return Json(new { success = true, catalogs = orderedCatalogs });
+                return this.Json(new { success = true, catalogs = orderedCatalogs });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "An error occurred while fetching catalogs.");
-                return Json(new
+                this._logger.LogError(ex, "An error occurred while fetching catalogs.");
+                return this.Json(new
                 {
                     success = false,
                     message = "An error occurred while fetching catalogs.",
@@ -55,77 +55,51 @@
         }
 
         [HttpPost]
-        public IActionResult ConstructCatalogGraph([FromBody] AnalysisRequest request)
-        {
-            if (request == null || string.IsNullOrWhiteSpace(request.DataSource) || string.IsNullOrWhiteSpace(request.Catalog))
-            {
-                _logger.LogWarning("Data source or catalog is empty or null.");
-                return Json(new { success = false, message = "Data source and catalog cannot be empty." });
-            }
-
-            try
-            {
-                _logger.LogInformation("Starting database analysis for the provided data source and catalog.");
-                var connectionString = _sqlVisualiserService.BuildConnectionString(request.DataSource, request.Catalog);
-                var analysisResult = _sqlVisualiserService.BuildDatabaseGraph(connectionString);
-
-                _logger.LogInformation("Database analysis completed successfully.");
-                return Json(new
-                {
-                    success = true,
-                    message = "Database analysis completed successfully.",
-                    graph = analysisResult
-                });
-            }
-            catch (InvalidOperationException ex)
-            {
-                _logger.LogError(ex, "An error occurred during database analysis.");
-                return Json(new
-                {
-                    success = false,
-                    message = "An error occurred during database analysis. Please check the logs for more details.",
-                    errorDetails = ex.Message
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogCritical(ex, "An unexpected error occurred.");
-                return Json(new
-                {
-                    success = false,
-                    message = "An unexpected error occurred. Please contact support.",
-                    errorDetails = ex.Message
-                });
-            }
-        }
-
-        [HttpPost]
         public IActionResult ConstructDirectedCatalogGraph([FromBody] AnalysisRequest request)
         {
-            if (request == null || string.IsNullOrWhiteSpace(request.DataSource) || string.IsNullOrWhiteSpace(request.Catalog))
+            if (request == null || string.IsNullOrWhiteSpace(request.DataSource) || request.Catalogs == null || !request.Catalogs.Any())
             {
-                _logger.LogWarning("Data source or catalog is empty or null.");
-                return Json(new { success = false, message = "Data source and catalog cannot be empty." });
+                this._logger.LogWarning("Data source or catalogs are empty or null.");
+                return this.Json(new { success = false, message = "Data source and catalogs cannot be empty." });
             }
 
             try
             {
-                _logger.LogInformation("Starting directed database analysis for the provided data source and catalog.");
-                var connectionString = _sqlVisualiserService.BuildConnectionString(request.DataSource, request.Catalog);
-                var analysisResult = _sqlVisualiserService.BuildDirectedDatabaseGraph(connectionString);
+                this._logger.LogInformation("Starting directed database analysis for the provided data source and catalogs.");
+                var combinedGraph = new Dictionary<string, DirectedGraphNode>();
 
-                _logger.LogInformation("Directed database analysis completed successfully.");
-                return Json(new
+                foreach (var catalog in request.Catalogs)
+                {
+                    var connectionString = this._sqlVisualiserService.BuildConnectionString(request.DataSource, catalog);
+                    var graph = this._sqlVisualiserService.BuildDirectedDatabaseGraph(connectionString, catalog);
+
+                    // Merge graphs
+                    foreach (var node in graph)
+                    {
+                        if (!combinedGraph.ContainsKey(node.Key))
+                        {
+                            combinedGraph[node.Key] = node.Value;
+                        }
+                        else
+                        {
+                            combinedGraph[node.Key].InNodes.UnionWith(node.Value.InNodes);
+                            combinedGraph[node.Key].OutNodes.UnionWith(node.Value.OutNodes);
+                        }
+                    }
+                }
+
+                this._logger.LogInformation("Directed database analysis completed successfully.");
+                return this.Json(new
                 {
                     success = true,
                     message = "Directed database analysis completed successfully.",
-                    graph = analysisResult
+                    graph = combinedGraph
                 });
             }
             catch (InvalidOperationException ex)
             {
-                _logger.LogError(ex, "An error occurred during directed database analysis.");
-                return Json(new
+                this._logger.LogError(ex, "An error occurred during directed database analysis.");
+                return this.Json(new
                 {
                     success = false,
                     message = "An error occurred during directed database analysis. Please check the logs for more details.",
@@ -134,8 +108,8 @@
             }
             catch (Exception ex)
             {
-                _logger.LogCritical(ex, "An unexpected error occurred.");
-                return Json(new
+                this._logger.LogCritical(ex, "An unexpected error occurred.");
+                return this.Json(new
                 {
                     success = false,
                     message = "An unexpected error occurred. Please contact support.",

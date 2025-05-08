@@ -20,3 +20,22 @@ html {
 body {
   margin-bottom: 60px;
 }
+
+#catalogSelection .multiselect-native-select .btn-group {
+    width: 100%;
+}
+
+/* Adjust padding for BS5 compatibility if needed */
+.multiselect-container .form-check-label {
+    padding-left: 0.5em;
+}
+
+.multiselect-filter > .input-group > .input-group-text {
+    /* BS5 compatibility for search icon */
+    background-color: transparent;
+    border: none;
+}
+
+.multiselect-filter > .input-group > .form-control {
+    border-radius: .25rem; /* Ensure search input has rounded corners */
+}

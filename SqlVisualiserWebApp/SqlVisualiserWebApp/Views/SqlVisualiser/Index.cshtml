@@ -1,6 +1,5 @@
 ﻿@{
     ViewData["Title"] = "Database Analysis";
-    @* Ensure Bootstrap CSS/JS and jQuery are loaded, typically in _Layout.cshtml *@
 }
 
 <div class="container mt-4">
@@ -8,24 +7,37 @@
 
     <div id="messageArea" class="mt-3 mb-3"></div>
 
-    <form id="dataSourceForm">
-        <div class="mb-3 d-flex align-items-center">
-            <label for="dataSource" class="form-label me-2 mb-0">Enter Data Source:</label>
-            <input type="text" class="form-control me-2" id="dataSource" name="dataSource" required placeholder="e.g. FINTECHDB01-DEV,50003" style="flex: 1;" />
-            <button type="button" id="fetchCatalogsBtn" class="btn btn-secondary rounded-md">Retrieve Catalogs</button>
+    @* Use Bootstrap Row for two-column layout *@
+    <div class="row g-3 mb-4">
+        <div class="col-md-6 d-flex">
+            <div class="p-3 border rounded-md bg-light w-100">
+                <h4 class="mb-3">1. Connect</h4>
+                <form id="dataSourceForm">
+                    <div class="mb-3">
+                        <label for="dataSource" class="form-label">Enter Data Source:</label>
+                        <input type="text" class="form-control" id="dataSource" name="dataSource" required placeholder="e.g. Server=your_server;Database=your_db;..." />
+                    </div>
+                    <button type="button" id="fetchCatalogsBtn" class="btn btn-secondary rounded-md w-100">Retrieve Catalogs</button>
+                </form>
+            </div>
         </div>
-    </form>
 
-    <div id="catalogSelection" style="display:none;" class="mt-4">
-        <h4>Select Catalog</h4>
-        <div class="mb-3">
-            <label for="catalogs" class="form-label">Available Catalogs:</label>
-            <select id="catalogs" name="catalogs" class="form-select"></select>
+        @* Right Column: Catalog Selection *@
+        <div class="col-md-6 d-flex">
+            <div id="catalogSelection" style="display:none; width: 100%;" class="p-3 border rounded-md bg-light w-100 d-flex flex-column">
+                <h4 class="mb-3">2. Select Catalog(s)</h4>
+                <div class="mb-3 flex-grow-1">
+                    <label for="catalogs" class="form-label d-block">Available Catalogs:</label>
+                    <select id="catalogs" name="catalogs" class="form-multi-select w-100" multiple></select>
+                </div>
+                <button type="button" id="analyzeCatalog" class="btn btn-primary rounded-md w-100 mt-auto">Analyze Selected</button>
+            </div>
         </div>
-        <button type="button" id="analyzeCatalog" class="btn btn-primary rounded-md">Analyze Selected Catalog</button>
-    </div>
 
-    @* Container for the graph and filtering controls *@
+    </div> @* End of row *@
+
+
+    @* Graph Area (remains full width below the columns) *@
     <div id="graphDisplayArea" class="mt-4" style="display:none;">
         <div class="border rounded-md p-3">
             <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
@@ -40,14 +52,14 @@
                     <label for="filterDepth" class="form-label mb-0">Depth:</label>
                     <input type="number" id="filterDepth" class="form-control form-control-sm" value="1" min="0" max="10" style="width: 70px;" />
 
-                    @* Layout Selector - Added more options *@
+                    @* Layout Selector *@
                     <label for="layoutSelector" class="form-label mb-0">Layout:</label>
                     <select id="layoutSelector" class="form-select form-select-sm" style="width: auto;">
                         <option value="dagre" selected>Hierarchical (Dagre)</option>
+                        <option value="breadthfirst">Radial (Centered)</option>
                         <option value="cose">Force Directed (Cose)</option>
                         <option value="circle">Circle</option>
                         <option value="grid">Grid</option>
-                        <option value="breadthfirst">Radial (Breadth First)</option>
                     </select>
                 </div>
             </div>
@@ -60,14 +72,15 @@
 </div>
 
 @section Scripts {
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.23.0/cytoscape.min.js" ></script>
+@* ** Ensure jQuery and Bootstrap JS are loaded before these ** *@
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.23.0/cytoscape.min.js"></script>
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
-@* No extra script needed for breadthfirst, cose, circle, grid - they are built-in *@
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-multiselect/1.1.2/js/bootstrap-multiselect.min.js"></script>
 
     <script>
         $(document).ready(function () {
-            // --- Cache jQuery selectors ---
+                        // --- Selectors ---
             const dataSourceInput = $('#dataSource');
             const catalogSelectionDiv = $('#catalogSelection');
             const catalogDropdown = $('#catalogs');
@@ -81,17 +94,18 @@
             const filterDepthInput = $('#filterDepth');
             const layoutSelector = $('#layoutSelector');
 
-            let cyInstance = null; // Cytoscape instance
-            let fullGraphData = null; // Store the original graph data from API
-            let currentFilteredElements = null; // Store the currently displayed elements
-            let currentNodeDistances = null; // Store distances from root
-            let highlightedNodeId = null; // Keep track of the highlighted node
+            // --- State ---
+            let cyInstance = null;
+            let fullGraphData = null; // Stores the raw { name: { name, type, catalog, inNodes, outNodes }, ... }
+            let currentSelectedCatalogs = []; // Store catalogs selected for analysis
+            let highlightedNodeId = null;
 
-            // --- Constants for Styling ---
+            // --- Constants ---
             const HIGHLIGHT_OPACITY = 1.0;
-            const FADE_OPACITY = 0.25; // Dimmed opacity
+            const FADE_OPACITY = 0.25;
             const DEFAULT_EDGE_COLOR = '#ccc';
-            const HIGHLIGHT_EDGE_COLOR = '#333'; // Darker color for highlighted edges
+            const HIGHLIGHT_EDGE_COLOR = '#333';
+            const SYSTEM_CATALOGS = ['master', 'msdb', 'tempdb', 'model']; // Example system catalogs
 
             // --- Event Listeners ---
             fetchCatalogsButton.on('click', fetchCatalogs);
@@ -100,93 +114,153 @@
             filterDepthInput.on('change', applyCurrentFiltersAndLayout);
             layoutSelector.on('change', applyCurrentFiltersAndLayout);
 
-            // --- Initial State ---
+            // --- Init ---
             initializePage();
 
-            // --- Named Functions ---
-
+            // --- Functions ---
             function initializePage() {
                 catalogDropdown.prop('disabled', true);
+                initializeMultiselect(true);
                 analyzeButton.prop('disabled', true);
                 hideGraphAndFilter();
             }
 
+            function initializeMultiselect(startDisabled = false) {
+
+                 if (catalogDropdown.data('multiselect')) { 
+                     catalogDropdown.multiselect('destroy'); 
+                 }
+
+                 catalogDropdown.multiselect({
+                    includeSelectAllOption: true, 
+                    selectAllText: ' Select All',
+                    enableFiltering: true, 
+                    enableCaseInsensitiveFiltering: true,
+                    maxHeight: 250, 
+                    numberDisplayed: 1,
+                    nonSelectedText: 'Select Catalog(s)...', 
+                    allSelectedText: 'All Catalogs Selected', 
+                    nSelectedText: ' Catalogs Selected',
+                    buttonClass: 'btn btn-outline-secondary',
+                    templates: { 
+                        button: '<button type="button" class="multiselect dropdown-toggle btn btn-outline-secondary w-100" data-bs-toggle="dropdown"><span class="multiselect-selected-text"></span></button>',
+                        ul: '<ul class="multiselect-container dropdown-menu" style="width: 100%;"></ul>' 
+                    }
+                 });
+                 if (startDisabled) { catalogDropdown.multiselect('disable'); }
+            }
+
             function showMessage(message, type = 'danger') {
-                const alertHtml = `
-                    <div class="alert alert-${type} alert-dismissible fade show rounded-md" role="alert">
-                        ${message}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>`;
+                const alertHtml = `<div class="alert alert-${type} alert-dismissible fade show rounded-md" role="alert">${message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
                 messageArea.html(alertHtml);
             }
 
-            function clearMessages() {
-                messageArea.html('');
-            }
+            function clearMessages() { messageArea.html(''); }
 
             function hideGraphAndFilter() {
                 if (cyInstance) { try { cyInstance.destroy(); } catch (e) { console.error("Error destroying Cytoscape instance:", e); } cyInstance = null; }
                 graphDisplayArea.hide(); nodeFilterContainer.hide();
                 nodeFilterDropdown.empty(); filterDepthInput.val(1); layoutSelector.val('dagre');
                 cyContainer.empty(); fullGraphData = null; currentFilteredElements = null; currentNodeDistances = null;
-                highlightedNodeId = null; // Reset highlight
+                highlightedNodeId = null;
             }
 
             function fetchCatalogs() {
-                const dataSource = dataSourceInput.val().trim(); hideGraphAndFilter();
+                const dataSource = dataSourceInput.val().trim();
+                hideGraphAndFilter();
+
                 if (!dataSource) { showMessage('Please enter a data source connection string.', 'warning'); resetCatalogControls(); enableControls(); return; }
                 clearMessages(); disableControls(); showMessage('Retrieving catalogs...', 'info');
+
                 $.ajax({
-                    url: '/SqlVisualiser/GetCatalogs', method: 'POST', contentType: 'application/json',
-                    data: JSON.stringify(dataSource), dataType: 'json',
-                    success: handleFetchCatalogsSuccess, error: handleFetchCatalogsError, complete: enableControls
+                    url: `/SqlVisualiser/Catalogs?dataSource=${encodeURIComponent(dataSource)}`,
+                    method: 'GET',
+                    success: handleFetchCatalogsSuccess,
+                    error: handleFetchCatalogsError,
+                    complete: enableControls
                 });
             }
 
             function handleFetchCatalogsSuccess(data) {
                 clearMessages();
-                if (data && data.success) { showMessage('Successfully connected and fetched catalogs.', 'success'); populateCatalogDropdown(data.catalogs); }
-                else { const msg = data && data.message ? data.message : 'Error fetching catalogs.'; showMessage(msg, 'danger'); resetCatalogControls(); }
+                if (data && data.success && data.catalogs) {
+                    showMessage('Successfully connected and fetched catalogs.', 'success');
+                    populateCatalogDropdown(data.catalogs);
+                } else {
+                    const msg = data && data.message ? data.message : 'Error fetching catalogs or no catalogs found.';
+                    showMessage(msg, 'danger');
+                    resetCatalogControls();
+                }
             }
 
             function handleFetchCatalogsError(jqXHR, textStatus, errorThrown) {
                 clearMessages(); console.error("AJAX Error (GetCatalogs):", textStatus, errorThrown, jqXHR.responseText);
                 let msg = 'An error occurred while communicating with the server.';
-                 if (jqXHR.status === 400) msg = 'Invalid request format.'; else if (jqXHR.status === 500) msg = 'Server error fetching catalogs.';
+                 if (jqXHR.status === 400) msg = 'Invalid request format or data source.';
+                 else if (jqXHR.status === 500) msg = 'Server error fetching catalogs.';
+                 else if (jqXHR.status === 404) msg = 'Catalog endpoint not found (404).';
                 showMessage(msg, 'danger'); resetCatalogControls();
             }
 
             function populateCatalogDropdown(catalogs) {
                 catalogDropdown.empty();
+
                 if (catalogs && catalogs.length > 0) {
-                    catalogs.forEach(catalog => { catalogDropdown.append($('<option>', { value: catalog, text: catalog })); });
-                    catalogSelectionDiv.slideDown(); catalogDropdown.prop('disabled', false); analyzeButton.prop('disabled', false);
-                } else { showMessage('Connection successful, but no catalogs found.', 'warning'); resetCatalogControls(); }
+                    catalogs.sort((a, b) => a.localeCompare(b));
+                    catalogs.forEach(catalog => {
+                        catalogDropdown.append($('<option>', { value: catalog, text: catalog }));
+                    });
+                    catalogSelectionDiv.slideDown(); // Show the right column
+                    initializeMultiselect(false); // Initialize and enable
+                    analyzeButton.prop('disabled', false);
+                } else {
+                    showMessage('Connection successful, but no catalogs found.', 'warning');
+                    resetCatalogControls();
+                }
             }
 
             function resetCatalogControls() {
-                catalogSelectionDiv.slideUp(); catalogDropdown.empty().prop('disabled', true); analyzeButton.prop('disabled', true);
+                catalogSelectionDiv.slideUp(); // Hide the right column
+                catalogDropdown.empty();
+                if (catalogDropdown.data('multiselect')) { catalogDropdown.multiselect('destroy'); }
+                initializeMultiselect(true); // Re-initialize empty and disabled
+                analyzeButton.prop('disabled', true);
             }
 
             function disableControls() {
                 dataSourceInput.prop('disabled', true); fetchCatalogsButton.prop('disabled', true);
-                catalogDropdown.prop('disabled', true); analyzeButton.prop('disabled', true);
+                if (catalogDropdown.data('multiselect')) catalogDropdown.multiselect('disable'); else catalogDropdown.prop('disabled', true);
+                analyzeButton.prop('disabled', true);
                 nodeFilterDropdown.prop('disabled', true); filterDepthInput.prop('disabled', true); layoutSelector.prop('disabled', true);
             }
 
             function enableControls() {
                 dataSourceInput.prop('disabled', false); fetchCatalogsButton.prop('disabled', false);
                 const catalogsExist = catalogDropdown.children('option').length > 0;
-                catalogDropdown.prop('disabled', !catalogsExist); analyzeButton.prop('disabled', !catalogsExist);
+                if (catalogDropdown.data('multiselect')) {
+                     if(catalogsExist) catalogDropdown.multiselect('enable'); else catalogDropdown.multiselect('disable');
+                } else {
+                     catalogDropdown.prop('disabled', !catalogsExist);
+                }
+                analyzeButton.prop('disabled', !catalogsExist);
+
                 const graphExists = !!fullGraphData;
                 nodeFilterDropdown.prop('disabled', !graphExists); filterDepthInput.prop('disabled', !graphExists); layoutSelector.prop('disabled', !graphExists);
             }
 
             function analyzeCatalog() {
-                const selectedCatalog = catalogDropdown.val(); const dataSource = dataSourceInput.val().trim(); hideGraphAndFilter();
-                if (!selectedCatalog || !dataSource) { showMessage('Please select a catalog and ensure data source is entered.', 'warning'); return; }
+                const dataSource = dataSourceInput.val().trim();
+                currentSelectedCatalogs = catalogDropdown.val() || []; // Store selected catalogs
+
+                hideGraphAndFilter();
+
+                if (!dataSource) { showMessage('Data source is missing.', 'warning'); return; }
+                if (currentSelectedCatalogs.length === 0) { showMessage('Please select at least one catalog to analyze.', 'warning'); return; }
+
                 clearMessages(); disableControls(); showMessage('Analyzing catalog dependencies...', 'info');
-                const postData = { dataSource: dataSource, catalog: selectedCatalog };
+
+                const postData = { dataSource: dataSource, catalogs: currentSelectedCatalogs };
+
                 $.ajax({
                     url: '/SqlVisualiser/ConstructDirectedCatalogGraph', method: 'POST', contentType: 'application/json',
                     data: JSON.stringify(postData), dataType: 'json',
@@ -198,8 +272,9 @@
                  clearMessages();
                  if (response && response.success && response.graph && typeof response.graph === 'object' && Object.keys(response.graph).length > 0) {
                     showMessage('Analysis successful. Preparing graph...', 'success');
-                    fullGraphData = response.graph; populateNodeFilterDropdown(fullGraphData);
-                    applyCurrentFiltersAndLayout(); // Render initial graph with defaults
+                    fullGraphData = response.graph;
+                    populateNodeFilterDropdown(fullGraphData); // Populate filter based on ALL nodes returned
+                    applyCurrentFiltersAndLayout(); // Render initial graph
                     nodeFilterContainer.show(); graphDisplayArea.show();
                  } else if (response && response.success) { showMessage('Analysis completed, but no dependency data was found.', 'warning'); hideGraphAndFilter(); }
                  else { const msg = response && response.message ? response.message : 'Analysis failed.'; showMessage(`Analysis failed: ${msg}`, 'danger'); hideGraphAndFilter(); }
@@ -212,44 +287,63 @@
                 showMessage(msg, 'danger'); hideGraphAndFilter();
             }
 
+            // *** UPDATED: Display catalog in filter dropdown ***
             function populateNodeFilterDropdown(graphData) {
-                nodeFilterDropdown.empty(); nodeFilterDropdown.append($('<option>', { value: '__all__', text: 'Show All Nodes' }));
-                const tables = []; const procedures = [];
-                Object.keys(graphData).forEach(nodeName => { const node = graphData[nodeName]; if (node) { (node.type === 0 ? tables : procedures).push(nodeName); } });
-                tables.sort((a, b) => a.localeCompare(b)); procedures.sort((a, b) => a.localeCompare(b));
-                if (tables.length > 0) { const group = $('<optgroup label="Tables"></optgroup>'); tables.forEach(name => { group.append($('<option>', { value: name, text: name })); }); nodeFilterDropdown.append(group); }
-                if (procedures.length > 0) { const group = $('<optgroup label="Stored Procedures"></optgroup>'); procedures.forEach(name => { group.append($('<option>', { value: name, text: name })); }); nodeFilterDropdown.append(group); }
-                nodeFilterDropdown.prop('disabled', false); filterDepthInput.prop('disabled', false); layoutSelector.prop('disabled', false);
+                nodeFilterDropdown.empty();
+                nodeFilterDropdown.append($('<option>', { value: '__all__', text: 'Show All Nodes' }));
+
+                // Group nodes by catalog first
+                const nodesByCatalog = {};
+                Object.keys(graphData).forEach(nodeName => {
+                    const node = graphData[nodeName];
+                    const catalog = node.catalog || 'Unknown';
+                    if (!nodesByCatalog[catalog]) {
+                        nodesByCatalog[catalog] = [];
+                    }
+                    nodesByCatalog[catalog].push(nodeName);
+                });
+
+                // Sort catalog names
+                const sortedCatalogs = Object.keys(nodesByCatalog).sort((a, b) => a.localeCompare(b));
+
+                // Create optgroups
+                sortedCatalogs.forEach(catalogName => {
+                    const group = $(`<optgroup label="${catalogName}"></optgroup>`);
+                    nodesByCatalog[catalogName].sort((a, b) => a.localeCompare(b)); // Sort nodes within catalog
+                    nodesByCatalog[catalogName].forEach(nodeName => {
+                        // Display name only, or add catalog if needed: text: `${nodeName} (${catalogName})`
+                        group.append($('<option>', { value: nodeName, text: nodeName }));
+                    });
+                    nodeFilterDropdown.append(group);
+                });
+
+                nodeFilterDropdown.prop('disabled', false);
+                filterDepthInput.prop('disabled', false);
+                layoutSelector.prop('disabled', false);
             }
+
 
             function applyCurrentFiltersAndLayout() {
                 const selectedNodeName = nodeFilterDropdown.val();
                 let depth = parseInt(filterDepthInput.val(), 10);
                 let selectedLayout = layoutSelector.val();
-
                 if (isNaN(depth) || depth < 0) { depth = 1; filterDepthInput.val(depth); }
                 if (!fullGraphData) { console.error("Full graph data needed."); return; }
-
-                // Force dagre layout if 'Show All' is selected OR if breadthfirst selected with 'Show All'
-                // Also force dagre if other layouts requiring a center node are selected with 'Show All'
-                if (selectedNodeName === '__all__' && ['breadthfirst', 'circle'].includes(selectedLayout)) {
-                     console.warn(`Layout '${selectedLayout}' requires a selected node. Falling back to Dagre for 'Show All'.`);
-                     selectedLayout = 'dagre';
-                     layoutSelector.val('dagre'); // Force selector back
-                }
+                if (selectedNodeName === '__all__' && ['breadthfirst', 'circle'].includes(selectedLayout)) { selectedLayout = 'dagre'; layoutSelector.val('dagre'); }
 
                 const { nodesToKeep, nodeDistances } = getNodesWithinDepth(selectedNodeName, depth);
-                const filteredElements = createElementsFromNodes(nodesToKeep);
-                currentFilteredElements = filteredElements; // Store for potential re-layout
-                currentNodeDistances = nodeDistances; // Store distances
+                const filteredElements = createElementsFromNodes(nodesToKeep); // Pass Set
+                currentFilteredElements = filteredElements;
+                currentNodeDistances = nodeDistances;
 
                 if (!filteredElements || filteredElements.length === 0) {
-                     showMessage('No nodes match the filter criteria or selected node has no connections at this depth.', 'info');
-                     if (cyInstance) { try { cyInstance.destroy(); } catch (e) { console.error("Error destroying Cytoscape instance:", e); } cyInstance = null; }
+                     showMessage('No nodes match filter/depth criteria.', 'info');
+                     if (cyInstance) { try { cyInstance.destroy(); } catch (e) {} cyInstance = null; }
                      cyContainer.empty(); return;
                 }
-                renderGraphWithElements(filteredElements, selectedLayout, selectedNodeName);
-                highlightedNodeId = null; // Reset highlight when filters/layout change
+                // Pass selectedCatalogs to rendering function for styling
+                renderGraphWithElements(filteredElements, selectedLayout, selectedNodeName, currentSelectedCatalogs);
+                highlightedNodeId = null;
             }
 
             function getNodesWithinDepth(startNodeName, maxDepth) {
@@ -258,14 +352,11 @@
                  if (fullGraphData[startNodeName]) { queue.push([startNodeName, 0]); visited.add(startNodeName); nodesToKeep.add(startNodeName); nodeDistances.set(startNodeName, 0); }
                  let head = 0;
                  while(head < queue.length) {
-                     const [currentNodeName, currentDepth] = queue[head++];
-                     if (currentDepth >= maxDepth) continue;
+                     const [currentNodeName, currentDepth] = queue[head++]; if (currentDepth >= maxDepth) continue;
                      const nodeData = fullGraphData[currentNodeName]; const neighbors = new Set();
                      if (nodeData?.outNodes) nodeData.outNodes.forEach(n => neighbors.add(n)); if (nodeData?.inNodes) nodeData.inNodes.forEach(n => neighbors.add(n));
                      neighbors.forEach(neighborName => {
-                         if (fullGraphData[neighborName] && !visited.has(neighborName)) {
-                             visited.add(neighborName); nodesToKeep.add(neighborName); const newDepth = currentDepth + 1; nodeDistances.set(neighborName, newDepth); queue.push([neighborName, newDepth]);
-                         }
+                         if (fullGraphData[neighborName] && !visited.has(neighborName)) { visited.add(neighborName); nodesToKeep.add(neighborName); const newDepth = currentDepth + 1; nodeDistances.set(neighborName, newDepth); queue.push([neighborName, newDepth]); }
                      });
                  }
                  return { nodesToKeep, nodeDistances };
@@ -274,10 +365,28 @@
             function createElementsFromNodes(nodesToKeepSet) {
                 const elements = []; let processingError = false;
                 try {
-                    nodesToKeepSet.forEach(nodeName => { if (fullGraphData[nodeName]) { elements.push({ group: 'nodes', data: { id: nodeName, label: nodeName, type: fullGraphData[nodeName].type } }); } });
+                    nodesToKeepSet.forEach(nodeName => {
+                        if (fullGraphData[nodeName]) {
+                            elements.push({
+                                group: 'nodes',
+                                data: {
+                                    id: nodeName,
+                                    label: nodeName,
+                                    type: fullGraphData[nodeName].type,
+                                    catalog: fullGraphData[nodeName].catalog || 'Unknown' // Add catalog data
+                                }
+                            });
+                        }
+                    });
                     nodesToKeepSet.forEach(sourceNodeName => {
                         const nodeData = fullGraphData[sourceNodeName];
-                        if (nodeData?.outNodes) { nodeData.outNodes.forEach(targetNodeName => { if (nodesToKeepSet.has(targetNodeName)) { elements.push({ group: 'edges', data: { id: `edge_${sourceNodeName}_to_${targetNodeName}`, source: sourceNodeName, target: targetNodeName } }); } }); }
+                        if (nodeData?.outNodes) {
+                            nodeData.outNodes.forEach(targetNodeName => {
+                                if (nodesToKeepSet.has(targetNodeName)) {
+                                    elements.push({ group: 'edges', data: { id: `edge_${sourceNodeName}_to_${targetNodeName}`, source: sourceNodeName, target: targetNodeName } });
+                                }
+                            });
+                        }
                     });
                 } catch(e) { console.error("Error creating graph elements:", e); showMessage('Error creating graph elements. Check console.', 'danger'); processingError = true; }
                 return processingError ? null : elements;
@@ -287,9 +396,7 @@
                 if (!cyInstance) return;
                 cyInstance.batch(function(){
                     cyInstance.elements().forEach(ele => {
-                        ele.style('opacity', HIGHLIGHT_OPACITY);
-                        ele.style('border-width', 0);
-                        ele.style('border-color', 'black');
+                        ele.style('opacity', HIGHLIGHT_OPACITY); ele.style('border-width', 0); ele.style('border-color', 'black');
                         if (ele.isEdge()) { ele.style('line-color', DEFAULT_EDGE_COLOR); ele.style('target-arrow-color', DEFAULT_EDGE_COLOR); }
                     });
                 });
@@ -298,90 +405,70 @@
 
             function applyHighlightStyles(tappedNode) {
                 if (!cyInstance || !fullGraphData) return;
-                const tappedNodeId = tappedNode.id();
-                let depth = parseInt(filterDepthInput.val(), 10); if (isNaN(depth) || depth < 0) { depth = 1; }
+                const tappedNodeId = tappedNode.id(); let depth = parseInt(filterDepthInput.val(), 10); if (isNaN(depth) || depth < 0) { depth = 1; }
                 const { nodesToKeep: neighborhoodNodes } = getNodesWithinDepth(tappedNodeId, depth);
                 const allEles = cyInstance.elements();
-                const neighborhoodEles = allEles.filter(ele => {
-                     if (ele.isNode()) { return neighborhoodNodes.has(ele.id()); }
-                     if (ele.isEdge()) { return neighborhoodNodes.has(ele.source().id()) && neighborhoodNodes.has(ele.target().id()); }
-                     return false;
-                 });
-                 const nonNeighborhoodEles = allEles.difference(neighborhoodEles);
-                 cyInstance.batch(function(){
-                     nonNeighborhoodEles.style('opacity', FADE_OPACITY);
-                     neighborhoodEles.forEach(ele => {
-                         ele.style('opacity', HIGHLIGHT_OPACITY);
-                         if (ele.isEdge()) { ele.style('line-color', HIGHLIGHT_EDGE_COLOR); ele.style('target-arrow-color', HIGHLIGHT_EDGE_COLOR); }
-                     });
-                     tappedNode.style('border-width', 3); tappedNode.style('border-color', '#e74c3c');
-                 });
-                 highlightedNodeId = tappedNodeId;
+                const neighborhoodEles = allEles.filter(ele => { if (ele.isNode()) { return neighborhoodNodes.has(ele.id()); } if (ele.isEdge()) { return neighborhoodNodes.has(ele.source().id()) && neighborhoodNodes.has(ele.target().id()); } return false; });
+                const nonNeighborhoodEles = allEles.difference(neighborhoodEles);
+                cyInstance.batch(function(){
+                    nonNeighborhoodEles.style('opacity', FADE_OPACITY);
+                    neighborhoodEles.forEach(ele => { ele.style('opacity', HIGHLIGHT_OPACITY); if (ele.isEdge()) { ele.style('line-color', HIGHLIGHT_EDGE_COLOR); ele.style('target-arrow-color', HIGHLIGHT_EDGE_COLOR); } });
+                    tappedNode.style('border-width', 3); tappedNode.style('border-color', '#e74c3c');
+                });
+                highlightedNodeId = tappedNodeId;
             }
 
-            function renderGraphWithElements(elements, layoutName = 'dagre', centerNodeId = null) {
-                 // Library check remains the same (only dagre extension needed explicitly)
-                 if (typeof cytoscape === 'undefined' || typeof dagre === 'undefined' || typeof cytoscapeDagre === 'undefined') {
-                    console.error("Cytoscape or Dagre libraries not loaded!"); showMessage('Error: Graphing libraries failed to load.', 'danger'); return;
-                }
-                if (cyInstance) { try { cyInstance.destroy(); } catch (e) { console.error("Error destroying Cytoscape instance:", e); } cyInstance = null; }
+            // *** UPDATED: Add catalog-based styling ***
+            function renderGraphWithElements(elements, layoutName = 'dagre', centerNodeId = null, analyzedCatalogs = []) {
+                 if (typeof cytoscape === 'undefined' || typeof dagre === 'undefined' || typeof cytoscapeDagre === 'undefined') { console.error("Cytoscape or Dagre libraries not loaded!"); showMessage('Error: Graphing libraries failed to load.', 'danger'); return; }
+                 if (cyInstance) { try { cyInstance.destroy(); } catch (e) { console.error("Error destroying Cytoscape instance:", e); } cyInstance = null; }
 
-                // --- Define Layout Options ---
                 let layoutOptions;
+                // Determine layout options (switch statement remains the same)
                 switch (layoutName) {
-                    case 'breadthfirst':
-                        if (centerNodeId && centerNodeId !== '__all__') {
-                            layoutOptions = { name: 'breadthfirst', fit: true, directed: true, padding: 30, circle: true, grid: false, spacingFactor: 1, avoidOverlap: true, nodeDimensionsIncludeLabels: true, roots: `#${CSS.escape(centerNodeId)}`, maximal: false, animate: false };
-                        } else {
-                            console.warn(`Breadthfirst layout requires a selected node. Falling back to Dagre.`);
-                            layoutSelector.val('dagre'); // Force selector back
-                            layoutOptions = { name: 'dagre', rankDir: 'TB', align: 'UL', spacingFactor: 1.1, nodeDimensionsIncludeLabels: true, ranker: 'network-simplex', fit: true, padding: 30 };
-                        }
-                        break;
-                    case 'circle':
-                        layoutOptions = { name: 'circle', fit: true, padding: 30, boundingBox: undefined, avoidOverlap: true, nodeDimensionsIncludeLabels: true, spacingFactor: undefined, radius: undefined, startAngle: 3 / 2 * Math.PI, sweep: undefined, clockwise: true, sort: undefined, animate: false };
-                        break;
-                    case 'grid':
-                         layoutOptions = { name: 'grid', fit: true, padding: 30, boundingBox: undefined, avoidOverlap: true, nodeDimensionsIncludeLabels: true, spacingFactor: undefined, condense: false, rows: undefined, cols: undefined, position: function( node ){}, sort: undefined, animate: false };
-                         break;
-                    case 'cose':
-                        // Basic cose options, can be customized further
-                        layoutOptions = { name: 'cose', idealEdgeLength: 100, nodeOverlap: 20, refresh: 20, fit: true, padding: 30, randomize: false, componentSpacing: 100, nodeRepulsion: 400000, edgeElasticity: 100, nestingFactor: 5, gravity: 80, numIter: 1000, initialTemp: 200, coolingFactor: 0.95, minTemp: 1.0, animate: false };
-                        break;
-                    case 'dagre':
-                    default: // Default to Dagre
-                        layoutOptions = { name: 'dagre', rankDir: 'TB', align: 'UL', spacingFactor: 1.1, nodeDimensionsIncludeLabels: true, ranker: 'network-simplex', fit: true, padding: 30 };
-                        break;
+                    case 'breadthfirst': if (centerNodeId && centerNodeId !== '__all__') { layoutOptions = { name: 'breadthfirst', fit: true, directed: true, padding: 30, circle: true, grid: false, spacingFactor: 1, avoidOverlap: true, nodeDimensionsIncludeLabels: true, roots: `#${CSS.escape(centerNodeId)}`, maximal: false, animate: false }; } else { console.warn(`Breadthfirst layout requires a selected node. Falling back to Dagre.`); layoutSelector.val('dagre'); layoutOptions = { name: 'dagre', rankDir: 'TB', align: 'UL', spacingFactor: 1.1, nodeDimensionsIncludeLabels: true, ranker: 'network-simplex', fit: true, padding: 30 }; } break;
+                    case 'circle': layoutOptions = { name: 'circle', fit: true, padding: 30, avoidOverlap: true, nodeDimensionsIncludeLabels: true, startAngle: 3 / 2 * Math.PI, clockwise: true, animate: false }; break;
+                    case 'grid': layoutOptions = { name: 'grid', fit: true, padding: 30, avoidOverlap: true, nodeDimensionsIncludeLabels: true, condense: false, animate: false }; break;
+                    case 'cose': layoutOptions = { name: 'cose', idealEdgeLength: 100, nodeOverlap: 20, refresh: 20, fit: true, padding: 30, randomize: false, componentSpacing: 100, nodeRepulsion: 400000, edgeElasticity: 100, nestingFactor: 5, gravity: 80, numIter: 1000, initialTemp: 200, coolingFactor: 0.95, minTemp: 1.0, animate: false }; break;
+                    case 'dagre': default: layoutOptions = { name: 'dagre', rankDir: 'TB', align: 'UL', spacingFactor: 1.1, nodeDimensionsIncludeLabels: true, ranker: 'network-simplex', fit: true, padding: 30 }; break;
                 }
 
-
-                // --- Render Graph ---
                 try {
                     graphDisplayArea.show();
                     cyInstance = cytoscape({
                         container: document.getElementById('cy'), elements: elements,
                         style: [
-                            { selector: 'node', style: { 'background-color': '#666', 'label': 'data(label)', 'width': 'label', 'height': 'label', 'padding': '10px', 'shape': 'rectangle', 'text-valign': 'center', 'text-halign': 'center', 'font-size': '10px', 'color': '#fff', 'text-outline-width': 1, 'text-outline-color': '#666', 'opacity': HIGHLIGHT_OPACITY, 'border-width': 0, 'border-color': 'black', 'transition-property': 'opacity, border-width, border-color', 'transition-duration': '0.2s' } },
-                            { selector: 'node[type = 0]', style: { 'background-color': '#3498db', 'shape': 'round-rectangle', 'text-outline-color': '#3498db' } },
-                            { selector: 'node[type = 1]', style: { 'background-color': '#f1c40f', 'shape': 'ellipse', 'text-outline-color': '#f1c40f', 'color': '#333' } },
+                            // Base Node Style (includes transitions)
+                            { selector: 'node', style: { 'background-color': '#666', 'label': 'data(label)', 'width': 'label', 'height': 'label', 'padding': '10px', 'shape': 'rectangle', 'text-valign': 'center', 'text-halign': 'center', 'font-size': '10px', 'color': '#fff', 'text-outline-width': 1, 'text-outline-color': '#666', 'opacity': HIGHLIGHT_OPACITY, 'border-width': 0, 'border-color': 'black', 'transition-property': 'opacity, border-width, border-color, background-color', 'transition-duration': '0.2s' } },
+                            // Type-Specific Styles
+                            { selector: 'node[type = 0]', style: { 'background-color': '#3498db', 'shape': 'round-rectangle', 'text-outline-color': '#3498db' } }, // Table
+                            { selector: 'node[type = 1]', style: { 'background-color': '#f1c40f', 'shape': 'ellipse', 'text-outline-color': '#f1c40f', 'color': '#333' } }, // Procedure
+                            { selector: 'node[type = 2]', style: { 'background-color': '#2ecc71', 'shape': 'diamond', 'text-outline-color': '#2ecc71', 'color': '#fff' } }, // Function
+                            // *** NEW: Catalog-Based Styles ***
+                            // Style for system catalogs (e.g., master) - dotted border
+                            { selector: `node[catalog = 'master'], node[catalog = 'msdb'], node[catalog = 'tempdb'], node[catalog = 'model']`, style: { 'border-style': 'dotted', 'border-color': '#6c757d', 'border-width': 1 } },
+                            // Style for nodes NOT in the analyzed list AND NOT system - dashed border
+                            // Create selector dynamically based on analyzedCatalogs
+                            ...analyzedCatalogs.map(cat => `node[catalog != '${cat}']`).concat(SYSTEM_CATALOGS.map(cat => `node[catalog != '${cat}']`)).map(selector => ({
+                                selector: selector,
+                                style: {
+                                    'border-style': 'dashed',
+                                    'border-color': '#adb5bd',
+                                    'border-width': 2
+                                    // You could also add class: 'cy-node-external' here if preferred
+                                }
+                             })),
+                             // Base Edge Style (includes transitions)
                             { selector: 'edge', style: { 'width': 2, 'line-color': DEFAULT_EDGE_COLOR, 'target-arrow-color': DEFAULT_EDGE_COLOR, 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'opacity': HIGHLIGHT_OPACITY, 'transition-property': 'opacity, line-color, target-arrow-color', 'transition-duration': '0.2s' } }
                         ],
-                        layout: layoutOptions // Use the determined layout options
+                        layout: layoutOptions
                     });
 
-                    // Event listeners for highlighting
-                    cyInstance.on('tap', 'node', function(evt){
-                        const tappedNode = evt.target;
-                        const tappedNodeId = tappedNode.id();
-                        if (highlightedNodeId === tappedNodeId) { resetHighlightStyles(); }
-                        else { resetHighlightStyles(); applyHighlightStyles(tappedNode); }
-                    });
+                    // Event listeners remain the same
+                    cyInstance.on('tap', 'node', function(evt){ const tappedNode = evt.target; const tappedNodeId = tappedNode.id(); if (highlightedNodeId === tappedNodeId) { resetHighlightStyles(); } else { resetHighlightStyles(); applyHighlightStyles(tappedNode); } });
                     cyInstance.on('tap', function(evt){ if (evt.target === cyInstance) { resetHighlightStyles(); } });
-
                     cyInstance.zoomingEnabled(true); cyInstance.panningEnabled(true); cyInstance.userZoomingEnabled(true); cyInstance.userPanningEnabled(true);
-                } catch (e) {
-                    console.error("Error rendering graph:", e); showMessage('Error rendering the graph. Check console.', 'danger'); hideGraphAndFilter();
-                }
+                } catch (e) { console.error("Error rendering graph:", e); showMessage('Error rendering the graph. Check console.', 'danger'); hideGraphAndFilter(); }
             }
 
             function renderDirectedGraph(graphData) {
