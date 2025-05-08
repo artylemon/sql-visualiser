@@ -20,10 +20,10 @@ public class DirectedGraphNode
     }
 
     // Nodes that represent incoming relationships (e.g., sprocs reading from this table)
-    public HashSet<string> InNodes { get; set; } = new HashSet<string>();
+    public HashSet<string> InNodes { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     // Nodes that represent outgoing relationships (e.g., sprocs writing to this table)
-    public HashSet<string> OutNodes { get; set; } = new HashSet<string>();
+    public HashSet<string> OutNodes { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     public DirectedGraphNode(string name, NodeType type, string catalog)
     {
