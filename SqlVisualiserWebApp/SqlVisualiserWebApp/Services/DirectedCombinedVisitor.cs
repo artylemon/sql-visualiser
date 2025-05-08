@@ -45,19 +45,26 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             // Should not happen for valid references, but handle defensively
             return $"[{catalog ?? "Unknown"}].[{schema ?? "Unknown"}].[INVALID_NAME]";
         }
+
         return $"[{catalog ?? "Unknown"}].[{schema ?? "Unknown"}].[{name}]";
     }
 
     // Find ISqlObject based on a potentially qualified name from SQL, using current context
     private ISqlObject? ResolveSqlObject(SchemaObjectName schemaObjectName)
     {
-        if (_currentSqlObject == null) return null; // Need context
+        if (_currentSqlObject == null)
+        {
+            return null; // Need context
+        }
 
         string? catalog = schemaObjectName.DatabaseIdentifier?.Value ?? _currentSqlObject.Catalog;
         string? schema = schemaObjectName.SchemaIdentifier?.Value ?? _currentSqlObject.Schema; // Or maybe always default to dbo if schema missing? Decide rule.
         string? name = schemaObjectName.BaseIdentifier?.Value;
 
-        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
 
         // Find the best match based on qualification provided
         return _sqlObjects.FirstOrDefault(obj =>
@@ -68,7 +75,6 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     }
     // --- End Key Generation ---
 
-
     public void SetCurrentNode(ISqlObject sqlObject)
     {
         if (sqlObject == null || string.IsNullOrWhiteSpace(sqlObject.Name))
@@ -77,6 +83,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             _currentSqlObject = null;
             return;
         }
+
         _currentSqlObject = sqlObject; // Store the full object
         string uniqueKey = GetUniqueNodeKey(_currentSqlObject);
 
@@ -95,11 +102,21 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     // Uses unique keys for graph operations
     private void AddDataFlowDependency(string sourceUniqueKey, ISqlObject sourceObject, string consumerUniqueKey, ISqlObject consumerObject)
     {
-        if (string.IsNullOrWhiteSpace(consumerUniqueKey) || string.IsNullOrWhiteSpace(sourceUniqueKey)) return;
+        if (string.IsNullOrWhiteSpace(consumerUniqueKey) || string.IsNullOrWhiteSpace(sourceUniqueKey))
+        {
+            return;
+        }
 
         // Ensure nodes exist in graph using unique keys and canonical info
-        if (!Graph.ContainsKey(consumerUniqueKey)) { Graph[consumerUniqueKey] = new DirectedGraphNode(consumerObject.Name, consumerObject.Type, consumerObject.Catalog ?? "Unknown"); }
-        if (!Graph.ContainsKey(sourceUniqueKey)) { Graph[sourceUniqueKey] = new DirectedGraphNode(sourceObject.Name, sourceObject.Type, sourceObject.Catalog ?? "Unknown"); }
+        if (!Graph.ContainsKey(consumerUniqueKey))
+        {
+            Graph[consumerUniqueKey] = new DirectedGraphNode(consumerObject.Name, consumerObject.Type, consumerObject.Catalog ?? "Unknown");
+        }
+
+        if (!Graph.ContainsKey(sourceUniqueKey))
+        {
+            Graph[sourceUniqueKey] = new DirectedGraphNode(sourceObject.Name, sourceObject.Type, sourceObject.Catalog ?? "Unknown");
+        }
 
         // Add edge using unique keys, avoid self-loops
         if (!sourceUniqueKey.Equals(consumerUniqueKey, StringComparison.OrdinalIgnoreCase))
@@ -113,12 +130,27 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     // Uses unique keys for graph operations
     private void AddDataWriteDependency(string modifierUniqueKey, ISqlObject modifierObject, string targetUniqueKey, ISqlObject targetObject)
     {
-         if (string.IsNullOrWhiteSpace(modifierUniqueKey) || string.IsNullOrWhiteSpace(targetUniqueKey)) return;
-         if (targetObject.Type != NodeType.Table) { Console.Error.WriteLine($"Write target '{targetObject.Name}' is not a Table."); return; } // Ensure target is a table
+         if (string.IsNullOrWhiteSpace(modifierUniqueKey) || string.IsNullOrWhiteSpace(targetUniqueKey))
+        {
+            return;
+        }
+
+        if (targetObject.Type != NodeType.Table)
+        {
+            Console.Error.WriteLine($"Write target '{targetObject.Name}' is not a Table.");
+            return;
+        } // Ensure target is a table
 
         // Ensure nodes exist
-        if (!Graph.ContainsKey(modifierUniqueKey)) { Graph[modifierUniqueKey] = new DirectedGraphNode(modifierObject.Name, modifierObject.Type, modifierObject.Catalog ?? "Unknown"); }
-        if (!Graph.ContainsKey(targetUniqueKey)) { Graph[targetUniqueKey] = new DirectedGraphNode(targetObject.Name, targetObject.Type, targetObject.Catalog ?? "Unknown"); }
+        if (!Graph.ContainsKey(modifierUniqueKey))
+        {
+            Graph[modifierUniqueKey] = new DirectedGraphNode(modifierObject.Name, modifierObject.Type, modifierObject.Catalog ?? "Unknown");
+        }
+
+        if (!Graph.ContainsKey(targetUniqueKey))
+        {
+            Graph[targetUniqueKey] = new DirectedGraphNode(targetObject.Name, targetObject.Type, targetObject.Catalog ?? "Unknown");
+        }
 
         // Add edge using unique keys, avoid self-loops
         if (!modifierUniqueKey.Equals(targetUniqueKey, StringComparison.OrdinalIgnoreCase))
@@ -127,16 +159,20 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             Graph[modifierUniqueKey].OutNodes.Add(targetUniqueKey);
             // *** TYPO WAS HERE *** It was adding targetUniqueKey to InNodes instead of modifierUniqueKey
             Graph[targetUniqueKey].InNodes.Add(modifierUniqueKey); // Corrected
-        } else {
-             Console.WriteLine($"DEBUG: Skipping self-loop Data Write Edge: {modifierUniqueKey} -> {targetUniqueKey}");
+        } else
+        {
+            Console.WriteLine($"DEBUG: Skipping self-loop Data Write Edge: {modifierUniqueKey} -> {targetUniqueKey}");
         }
     }
-
 
     // Catch SCALAR function calls
     public override void Visit(FunctionCall node)
     {
-        if (_currentSqlObject == null) { base.Visit(node); return; } // Need current object context
+        if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        } // Need current object context
 
         var functionNameNode = node.FunctionName; // This is an Identifier
         if (functionNameNode != null && !string.IsNullOrWhiteSpace(functionNameNode.Value))
@@ -155,13 +191,18 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                 AddDataFlowDependency(sourceKey, resolvedFunction, consumerKey, _currentSqlObject);
             }
         }
+
         base.Visit(node);
     }
 
     // Catch TABLE-VALUED function calls in FROM/JOIN clauses
     public override void Visit(SchemaObjectFunctionTableReference node)
     {
-        if (_currentSqlObject == null || node.SchemaObject == null) { base.Visit(node); return; }
+        if (_currentSqlObject == null || node.SchemaObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
 
         var resolvedFunction = ResolveSqlObject(node.SchemaObject);
 
@@ -171,14 +212,18 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             string consumerKey = GetUniqueNodeKey(_currentSqlObject);
             AddDataFlowDependency(sourceKey, resolvedFunction, consumerKey, _currentSqlObject);
         }
+
         base.Visit(node);
     }
-
 
     // Handles references to TABLES, VIEWS, or FUNCTIONS referenced with table-like syntax
     public override void Visit(NamedTableReference node)
     {
-         if (_currentSqlObject == null || node.SchemaObject == null) { base.Visit(node); return; }
+         if (_currentSqlObject == null || node.SchemaObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
 
         var referencedObject = ResolveSqlObject(node.SchemaObject);
 
@@ -201,13 +246,19 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             }
             // Add logic for Views if needed
         }
+
         base.Visit(node);
     }
 
     // Visit SELECT to ensure contained elements are processed
     public override void Visit(SelectStatement node)
     {
-        if (_currentSqlObject == null) { base.Visit(node); return; }
+        if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
+
         base.Visit(node);
     }
 
@@ -218,7 +269,12 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         string? originalDmlTargetKey = _currentDmlTargetTableKey;
         _currentDmlTargetTableKey = null;
 
-        if (_currentSqlObject == null) { base.Visit(node); return; }
+        if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
+
         if (node.InsertSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
         {
             var targetObject = ResolveSqlObject(namedTable.SchemaObject);
@@ -230,8 +286,15 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                 _currentDmlTargetTableKey = targetKey; // Store the unique key
             }
         }
-        try { base.Visit(node); }
-        finally { _currentDmlTargetTableKey = originalDmlTargetKey; }
+
+        try
+        {
+            base.Visit(node);
+        }
+        finally
+        {
+            _currentDmlTargetTableKey = originalDmlTargetKey;
+        }
     }
 
     public override void Visit(UpdateStatement node)
@@ -239,7 +302,12 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         string? originalDmlTargetKey = _currentDmlTargetTableKey;
         _currentDmlTargetTableKey = null;
 
-        if (_currentSqlObject == null) { base.Visit(node); return; }
+        if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
+
         if (node.UpdateSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
         {
             var targetObject = ResolveSqlObject(namedTable.SchemaObject);
@@ -251,8 +319,15 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                  _currentDmlTargetTableKey = targetKey;
             }
         }
-        try { base.Visit(node); }
-        finally { _currentDmlTargetTableKey = originalDmlTargetKey; }
+
+        try
+        {
+            base.Visit(node);
+        }
+        finally
+        {
+            _currentDmlTargetTableKey = originalDmlTargetKey;
+        }
     }
 
     public override void Visit(DeleteStatement node)
@@ -260,7 +335,12 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         string? originalDmlTargetKey = _currentDmlTargetTableKey;
         _currentDmlTargetTableKey = null;
 
-         if (_currentSqlObject == null) { base.Visit(node); return; }
+         if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
+
         if (node.DeleteSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
         {
             var targetObject = ResolveSqlObject(namedTable.SchemaObject);
@@ -272,8 +352,15 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                  _currentDmlTargetTableKey = targetKey;
             }
         }
-        try { base.Visit(node); }
-        finally { _currentDmlTargetTableKey = originalDmlTargetKey; }
+
+        try
+        {
+            base.Visit(node);
+        }
+        finally
+        {
+            _currentDmlTargetTableKey = originalDmlTargetKey;
+        }
     }
 
     public override void Visit(MergeStatement node)
@@ -281,7 +368,12 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         string? originalDmlTargetKey = _currentDmlTargetTableKey;
         _currentDmlTargetTableKey = null;
 
-        if (_currentSqlObject == null) { base.Visit(node); return; }
+        if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
+
         if (node.MergeSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
         {
             var targetObject = ResolveSqlObject(namedTable.SchemaObject);
@@ -293,14 +385,26 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                  _currentDmlTargetTableKey = targetKey;
             }
         }
-        try { base.Visit(node); }
-        finally { _currentDmlTargetTableKey = originalDmlTargetKey; }
+
+        try
+        {
+            base.Visit(node);
+        }
+        finally
+        {
+            _currentDmlTargetTableKey = originalDmlTargetKey;
+        }
     }
 
     // EXECUTE statement handling (Caller -> Callee dependency)
     public override void Visit(ExecuteStatement node)
     {
-        if (_currentSqlObject == null) { base.Visit(node); return; }
+        if (_currentSqlObject == null)
+        {
+            base.Visit(node);
+            return;
+        }
+
         if (node.ExecuteSpecification?.ExecutableEntity is ExecutableProcedureReference procedureReference)
         {
             // ProcedureReference.ProcedureReference is the SchemaObjectName
@@ -313,9 +417,13 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         {
              foreach (var sqlString in stringList.Strings)
              {
-                 if (sqlString is ValueExpression valExpr) { HandleDynamicSql(valExpr); }
-             }
+                 if (sqlString is ValueExpression valExpr)
+                {
+                    HandleDynamicSql(valExpr);
+                }
+            }
         }
+
         base.Visit(node);
     }
 
@@ -325,20 +433,37 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     // *** UPDATED: Use unique keys and ISqlObject context ***
     private void HandlePotentialDependency(SchemaObjectName calleeSchemaObjectName)
     {
-        if (_currentSqlObject == null) return;
+        if (_currentSqlObject == null)
+        {
+            return;
+        }
 
         var callerObject = _currentSqlObject; // Already have this
         var calleeObject = ResolveSqlObject(calleeSchemaObjectName); // Resolve based on SQL name + context
 
-        if (callerObject == null || string.IsNullOrWhiteSpace(callerObject.Name)) { /* Log error */ return; }
-        if (calleeObject == null || string.IsNullOrWhiteSpace(calleeObject.Name)) { /* Log error or ignore if not found */ return; }
+        if (callerObject == null || string.IsNullOrWhiteSpace(callerObject.Name))
+        { /* Log error */
+            return;
+        }
+
+        if (calleeObject == null || string.IsNullOrWhiteSpace(calleeObject.Name))
+        { /* Log error or ignore if not found */
+            return;
+        }
 
         string callerKey = GetUniqueNodeKey(callerObject);
         string calleeKey = GetUniqueNodeKey(calleeObject);
 
         // Ensure nodes exist
-        if (!Graph.ContainsKey(callerKey)) { Graph[callerKey] = new DirectedGraphNode(callerObject.Name, callerObject.Type, callerObject.Catalog ?? "Unknown"); }
-        if (!Graph.ContainsKey(calleeKey)) { Graph[calleeKey] = new DirectedGraphNode(calleeObject.Name, calleeObject.Type, calleeObject.Catalog ?? "Unknown"); }
+        if (!Graph.ContainsKey(callerKey))
+        {
+            Graph[callerKey] = new DirectedGraphNode(callerObject.Name, callerObject.Type, callerObject.Catalog ?? "Unknown");
+        }
+
+        if (!Graph.ContainsKey(calleeKey))
+        {
+            Graph[calleeKey] = new DirectedGraphNode(calleeObject.Name, calleeObject.Type, calleeObject.Catalog ?? "Unknown");
+        }
 
         // Add edge using unique keys, avoid self-calls
         if (!callerKey.Equals(calleeKey, StringComparison.OrdinalIgnoreCase))
@@ -351,23 +476,52 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     // Dynamic SQL parsing (use with caution)
     private void HandleDynamicSql(ValueExpression sqlExpression)
     {
-        if (_currentSqlObject == null) return; // Need context for recursive calls
-        if (sqlExpression == null || sqlExpression.ScriptTokenStream == null) return;
+        if (_currentSqlObject == null)
+        {
+            return; // Need context for recursive calls
+        }
+
+        if (sqlExpression == null || sqlExpression.ScriptTokenStream == null)
+        {
+            return;
+        }
+
         try
         {
             string dynamicSql = string.Join("", sqlExpression.ScriptTokenStream
                 .Skip(sqlExpression.FirstTokenIndex).Take(sqlExpression.LastTokenIndex - sqlExpression.FirstTokenIndex + 1).Select(t => t.Text));
-            if (dynamicSql.StartsWith("'") && dynamicSql.EndsWith("'")) { dynamicSql = dynamicSql.Substring(1, dynamicSql.Length - 2).Replace("''", "'"); }
-            else if (dynamicSql.StartsWith("N'") && dynamicSql.EndsWith("'")) { dynamicSql = dynamicSql.Substring(2, dynamicSql.Length - 3).Replace("''", "'"); }
-            if (string.IsNullOrWhiteSpace(dynamicSql)) return;
+            if (dynamicSql.StartsWith("'") && dynamicSql.EndsWith("'"))
+            {
+                dynamicSql = dynamicSql.Substring(1, dynamicSql.Length - 2).Replace("''", "'");
+            }
+            else if (dynamicSql.StartsWith("N'") && dynamicSql.EndsWith("'"))
+            {
+                dynamicSql = dynamicSql.Substring(2, dynamicSql.Length - 3).Replace("''", "'");
+            }
+
+            if (string.IsNullOrWhiteSpace(dynamicSql))
+            {
+                return;
+            }
 
             using (var reader = new StringReader(dynamicSql))
             {
                 var fragment = _dynamicSqlParser.Parse(reader, out var errors);
-                if (errors != null && errors.Count > 0) { Console.Error.WriteLine($"Errors parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {string.Join("; ", errors.Select(e => e.Message))}"); return; }
-                if (fragment != null) { fragment.Accept(this); } // Recursive call maintains _currentSqlObject context
+                if (errors != null && errors.Count > 0)
+                {
+                    Console.Error.WriteLine($"Errors parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {string.Join("; ", errors.Select(e => e.Message))}");
+                    return;
+                }
+
+                if (fragment != null)
+                {
+                    fragment.Accept(this);
+                } // Recursive call maintains _currentSqlObject context
             }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"Exception parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Exception parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {ex.Message}");
+        }
     }
 }

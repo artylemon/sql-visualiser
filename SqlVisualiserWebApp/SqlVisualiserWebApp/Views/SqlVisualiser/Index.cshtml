@@ -1,28 +1,5 @@
 ﻿@{
     ViewData["Title"] = "Database Analysis";
-    @* Ensure Bootstrap 5 CSS/JS and jQuery are loaded, typically in _Layout.cshtml *@
-    @* Optional: Add custom styles for better multiselect appearance if needed *@
-    <style>
-        /* Ensure dropdown menu aligns well with the button */
-        .multiselect-container {
-            width: 100%; /* Make dropdown menu match button width potentially set by col-* */
-        }
-            /* Adjust padding for BS5 compatibility if needed */
-            .multiselect-container .form-check-label {
-                padding-left: 0.5em;
-            }
-
-        .multiselect-filter > .input-group > .input-group-text {
-            /* BS5 compatibility for search icon */
-            background-color: transparent;
-            border: none;
-        }
-
-        .multiselect-filter > .input-group > .form-control {
-            border-radius: .25rem; /* Ensure search input has rounded corners */
-        }
-
-    </style>
 }
 
 <div class="container mt-4">
@@ -32,13 +9,8 @@
 
     @* Use Bootstrap Row for two-column layout *@
     <div class="row g-3 mb-4">
-        @* Add gap and bottom margin *@
-
-        @* Left Column: Data Source *@
         <div class="col-md-6 d-flex">
-            @* Added d-flex for equal height columns *@
             <div class="p-3 border rounded-md bg-light w-100">
-                @* Added w-100 *@
                 <h4 class="mb-3">1. Connect</h4>
                 <form id="dataSourceForm">
                     <div class="mb-3">
@@ -52,17 +24,13 @@
 
         @* Right Column: Catalog Selection *@
         <div class="col-md-6 d-flex">
-            @* Added d-flex for equal height columns *@
-            <div id="catalogSelection" style="display:none;" class="p-3 border rounded-md bg-light w-100 d-flex flex-column">
-                @* Added w-100 and flex column *@
+            <div id="catalogSelection" style="display:none; width: 100%;" class="p-3 border rounded-md bg-light w-100 d-flex flex-column">
                 <h4 class="mb-3">2. Select Catalog(s)</h4>
                 <div class="mb-3 flex-grow-1">
-                    @* Added flex-grow-1 to allow select to expand *@
-                    @* ** UPDATED: Added d-block to label ** *@
                     <label for="catalogs" class="form-label d-block">Available Catalogs:</label>
-                    <select id="catalogs" name="catalogs" class="form-select" multiple></select> @* Multiselect JS will handle height *@
+                    <select id="catalogs" name="catalogs" class="form-multi-select w-100" multiple></select>
                 </div>
-                <button type="button" id="analyzeCatalog" class="btn btn-primary rounded-md w-100 mt-auto">Analyze Selected</button> @* Added mt-auto to push button down *@
+                <button type="button" id="analyzeCatalog" class="btn btn-primary rounded-md w-100 mt-auto">Analyze Selected</button>
             </div>
         </div>
 
@@ -108,7 +76,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.23.0/cytoscape.min.js"></script>
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
-@* ** NEW: Add Bootstrap Multiselect JS ** *@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-multiselect/1.1.2/js/bootstrap-multiselect.min.js"></script>
 
     <script>
@@ -159,14 +126,26 @@
             }
 
             function initializeMultiselect(startDisabled = false) {
-                 if (catalogDropdown.data('multiselect')) { catalogDropdown.multiselect('destroy'); }
+
+                 if (catalogDropdown.data('multiselect')) { 
+                     catalogDropdown.multiselect('destroy'); 
+                 }
+
                  catalogDropdown.multiselect({
-                    includeSelectAllOption: true, selectAllText: ' Select All',
-                    enableFiltering: true, enableCaseInsensitiveFiltering: true,
-                    maxHeight: 250, numberDisplayed: 1,
-                    nonSelectedText: 'Select Catalog(s)...', allSelectedText: 'All Catalogs Selected', nSelectedText: ' Catalogs Selected',
-                    buttonClass: 'btn btn-outline-secondary w-100',
-                    templates: { button: '<button type="button" class="multiselect dropdown-toggle btn btn-outline-secondary w-100" data-bs-toggle="dropdown"><span class="multiselect-selected-text"></span></button>', ul: '<ul class="multiselect-container dropdown-menu" style="width: 100%;"></ul>' }
+                    includeSelectAllOption: true, 
+                    selectAllText: ' Select All',
+                    enableFiltering: true, 
+                    enableCaseInsensitiveFiltering: true,
+                    maxHeight: 250, 
+                    numberDisplayed: 1,
+                    nonSelectedText: 'Select Catalog(s)...', 
+                    allSelectedText: 'All Catalogs Selected', 
+                    nSelectedText: ' Catalogs Selected',
+                    buttonClass: 'btn btn-outline-secondary',
+                    templates: { 
+                        button: '<button type="button" class="multiselect dropdown-toggle btn btn-outline-secondary w-100" data-bs-toggle="dropdown"><span class="multiselect-selected-text"></span></button>',
+                        ul: '<ul class="multiselect-container dropdown-menu" style="width: 100%;"></ul>' 
+                    }
                  });
                  if (startDisabled) { catalogDropdown.multiselect('disable'); }
             }
