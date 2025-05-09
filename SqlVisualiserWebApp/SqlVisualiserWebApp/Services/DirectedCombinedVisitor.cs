@@ -67,10 +67,10 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         string? name = schemaObjectName.BaseIdentifier?.Value;
         if (string.IsNullOrWhiteSpace(name))
         {
-            return $"[{catalog ?? "Unknown"}].[{schema ?? "Unknown"}].[INVALID_NAME]";
+            return $"[{catalog ?? "Unknown"}].[{schema ??  "dbo"}].[INVALID_NAME]";
         }
 
-        return $"[{catalog ?? "Unknown"}].[{schema ?? "Unknown"}].[{name}]";
+        return $"[{catalog ?? "Unknown"}].[{schema ??  "dbo"}].[{name}]";
     }
 
     // --- End Key Generation ---
