@@ -16,6 +16,7 @@ namespace SqlVisualiserWebApp
 
             // Register application services
             builder.Services.AddScoped<Services.SqlVisualiserService>();
+            builder.Services.AddScoped<Services.DirectedCombinedVisitor>();
 
             var app = builder.Build();
 

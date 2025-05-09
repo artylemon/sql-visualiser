@@ -10,10 +10,12 @@ namespace SqlVisualiserWebApp.Services
     public class SqlVisualiserService
     {
         private readonly ILogger<SqlVisualiserService> _logger;
+        private readonly DirectedCombinedVisitor _visitor;
 
-        public SqlVisualiserService(ILogger<SqlVisualiserService> logger)
+        public SqlVisualiserService(ILogger<SqlVisualiserService> logger, DirectedCombinedVisitor visitor)
         {
             this._logger = logger;
+            this._visitor = visitor;
         }
 
         public string BuildConnectionString(string dataSource, string initialCatalog)
@@ -37,7 +39,7 @@ namespace SqlVisualiserWebApp.Services
                 PersistSecurityInfo = true,
                 MinPoolSize = 5,
                 MaxPoolSize = 120,
-                ConnectTimeout = 5
+                ConnectTimeout = 10
             };
 
             return builder.ConnectionString;
@@ -85,7 +87,7 @@ namespace SqlVisualiserWebApp.Services
                     string query = @"
                         SELECT s.name AS SchemaName, p.name AS ProcedureName, m.definition
                         FROM sys.procedures p
-                        JOIN sys.sql_modules m ON p.object_id = m.object_id
+                        LEFT JOIN sys.sql_modules m ON p.object_id = m.object_id
                         JOIN sys.schemas s ON p.schema_id = s.schema_id";
 
                     var command = new SqlCommand(query, connection);
@@ -95,7 +97,14 @@ namespace SqlVisualiserWebApp.Services
                         {
                             string schemaName = reader.GetString(0);
                             string procName = reader.GetString(1);
-                            string definition = reader.GetString(2);
+                            string definition = reader.IsDBNull(2) ? null : reader.GetString(2);
+
+                            if (string.IsNullOrWhiteSpace(definition))
+                            {
+                                this._logger.LogWarning("Stored procedure {Schema}.{Procedure} in catalog {Catalog} has no definition and will be skipped.",
+                                    schemaName, procName, catalog);
+                                continue; // Skip this stored procedure
+                            }
 
                             // Create a new StoredProcedure object and set the catalog
                             procedures.Add(new StoredProcedure
@@ -113,6 +122,11 @@ namespace SqlVisualiserWebApp.Services
             {
                 this._logger.LogError(ex, "Error retrieving stored procedures from the database.");
                 throw new InvalidOperationException("Failed to retrieve stored procedures.", ex);
+            }
+            catch (Exception ex)
+            {
+                this._logger.LogError(ex, "Error parsing stored procedures from the database.");
+                throw;
             }
 
             return procedures;
@@ -217,25 +231,31 @@ namespace SqlVisualiserWebApp.Services
             return sqlObjects;
         }
 
-        public Dictionary<string, DirectedGraphNode> BuildDirectedDatabaseGraph(string connectionString, string catalog)
+        public Dictionary<string, DirectedGraphNode> BuildDirectedDatabaseGraph(string dataSource, List<string> catalogs)
         {
             try
             {
-                this._logger.LogInformation($"Starting directed database analysis for catalog: {catalog}");
+                _logger.LogInformation($"Starting directed database analysis for catalogs: {string.Join(", ", catalogs)}");
 
-                // Step 1: Retrieve all SQL objects (tables, stored procedures, and functions)
-                var sqlObjects = this.GetSqlObjects(connectionString, catalog);
+                // Step 1: Retrieve all SQL objects from all catalogs
+                var allSqlObjects = new List<ISqlObject>();
+                foreach (var catalog in catalogs)
+                {
+                    var connectionString = BuildConnectionString(dataSource, catalog);
+                    var sqlObjects = GetSqlObjects(connectionString, catalog);
+                    allSqlObjects.AddRange(sqlObjects);
+                }
 
-                // Step 2: Initialize the DirectedCombinedVisitor
-                var directedVisitor = new DirectedCombinedVisitor(sqlObjects);
+                // Step 2: Use the injected DirectedCombinedVisitor and set up the graph
+                _visitor.SetupGraph(allSqlObjects);
 
                 // Step 3: Create a single instance of TSql150Parser
                 var parser = new TSql150Parser(false);
 
                 // Step 4: Parse each SQL object and build the directed graph
-                foreach (var sqlObject in sqlObjects)
+                foreach (var sqlObject in allSqlObjects)
                 {
-                    directedVisitor.SetCurrentNode(sqlObject);
+                    _visitor.SetCurrentNode(sqlObject);
 
                     using (var reader = new StringReader(sqlObject.Definition))
                     {
@@ -243,22 +263,22 @@ namespace SqlVisualiserWebApp.Services
 
                         if (errors != null && errors.Count > 0)
                         {
-                            this._logger.LogWarning("Parsing errors in {ObjectType} {ObjectName}: {Errors}",
+                            _logger.LogWarning("Parsing errors in {ObjectType} {ObjectName}: {Errors}",
                                 sqlObject.Type, sqlObject.Name, string.Join(", ", errors.Select(e => e.Message)));
                             continue; // Skip this object if there are parsing errors
                         }
 
-                        fragment.Accept(directedVisitor);
+                        fragment.Accept(_visitor);
                     }
                 }
 
-                this._logger.LogInformation($"Directed database analysis for catalog {catalog} completed successfully.");
-                return directedVisitor.Graph;
+                _logger.LogInformation($"Directed database analysis for catalogs {string.Join(", ", catalogs)} completed successfully.");
+                return _visitor.Graph;
             }
             catch (Exception ex)
             {
-                this._logger.LogError(ex, $"An error occurred during directed database analysis for catalog {catalog}.");
-                throw new InvalidOperationException($"Directed database analysis for catalog {catalog} failed.", ex);
+                _logger.LogError(ex, $"An error occurred during directed database analysis for catalogs {string.Join(", ", catalogs)}.");
+                throw new InvalidOperationException($"Directed database analysis for catalogs {string.Join(", ", catalogs)} failed.", ex);
             }
         }
     }

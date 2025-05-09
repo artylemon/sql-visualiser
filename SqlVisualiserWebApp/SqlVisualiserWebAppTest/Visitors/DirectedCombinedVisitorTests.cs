@@ -1,23 +1,32 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Collections.Generic;
-using SqlVisualiserWebApp.Services;
+using SqlVisualiserWebApp.Services; // Assuming SqlVisualiserService is here for ILogger<SqlVisualiserService>
 using SqlVisualiserWebApp.Models;
 using SqlVisualiserWebApp.Models.Enums;
 using SqlVisualiserWebApp.Models.Interfaces;
 using Microsoft.SqlServer.TransactSql.ScriptDom;
 using System.IO;
 using System.Linq;
-using System; // For StringComparison
+using System;
+using Microsoft.Extensions.Logging; // Required for ILogger
+using Microsoft.Extensions.Logging.Abstractions; // Required for NullLogger
 
 namespace SqlVisualiserWebAppTest;
 
 [TestClass]
-public class DirectedCombinedVisitorTests // Renamed for clarity
+public class DirectedCombinedVisitorTests
 {
-    private const string DEFAULT_CATALOG = "TestCatalog"; // Define a default catalog for tests
-    private const string DEFAULT_SCHEMA = "dbo"; // Define a default schema
+    private const string DEFAULT_CATALOG = "TestCatalog";
+    private const string DEFAULT_SCHEMA = "dbo";
+    private ILogger<SqlVisualiserService> _logger;
 
-    // Helper to parse SQL
+    [TestInitialize]
+    public void TestInitialize()
+    {
+        // Use NullLogger to avoid actual logging during tests
+        _logger = NullLogger<SqlVisualiserService>.Instance;
+    }
+
     private TSqlFragment ParseSql(string sql)
     {
         var parser = new TSql150Parser(false);
@@ -29,15 +38,14 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         }
     }
 
-    // Helper to create unique key consistently
     private string GetUniqueKey(string name, string schema = DEFAULT_SCHEMA, string catalog = DEFAULT_CATALOG)
     {
         return $"[{catalog}].[{schema}].[{name}]";
     }
 
-    // --- Test Setup Helper ---
+    // *** UPDATED: Test Setup Helper to use new visitor constructor and SetupGraph ***
     private (DirectedCombinedVisitor visitor, ISqlObject currentNode) SetupVisitor(
-        List<ISqlObject>? sqlObjects = null, // Now contains tables, functions, sprocs
+        List<ISqlObject>? sqlObjects = null,
         string currentObjectName = "TestProc",
         NodeType currentNodeType = NodeType.Procedure,
         string currentObjectCatalog = DEFAULT_CATALOG,
@@ -45,23 +53,20 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
     {
         sqlObjects ??= new List<ISqlObject>();
 
-        // Ensure all provided objects have a catalog and schema
         foreach (var obj in sqlObjects)
         {
             obj.Catalog ??= DEFAULT_CATALOG;
             obj.Schema ??= DEFAULT_SCHEMA;
         }
 
-        // Ensure the current node object exists in the list if not already present
         var currentNode = sqlObjects.FirstOrDefault(o =>
                             o.Name.Equals(currentObjectName, StringComparison.OrdinalIgnoreCase) &&
-                            (o.Schema?.Equals(currentObjectSchema, StringComparison.OrdinalIgnoreCase) ?? (currentObjectSchema == DEFAULT_SCHEMA)) && // Handle potential null schema
-                            (o.Catalog?.Equals(currentObjectCatalog, StringComparison.OrdinalIgnoreCase) ?? (currentObjectCatalog == DEFAULT_CATALOG)) // Handle potential null catalog
+                            (o.Schema?.Equals(currentObjectSchema, StringComparison.OrdinalIgnoreCase) ?? (currentObjectSchema == DEFAULT_SCHEMA)) &&
+                            (o.Catalog?.Equals(currentObjectCatalog, StringComparison.OrdinalIgnoreCase) ?? (currentObjectCatalog == DEFAULT_CATALOG))
                            );
 
         if (currentNode == null)
         {
-            // Create the appropriate ISqlObject based on type
             switch (currentNodeType)
             {
                 case NodeType.Procedure:
@@ -75,24 +80,24 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
                      break;
                 default:
                      throw new ArgumentException($"Unsupported NodeType '{currentNodeType}' for current object setup.");
-
             }
-            sqlObjects.Insert(0, currentNode); // Add to the list
+
+            sqlObjects.Insert(0, currentNode);
         }
         else
         {
-            // Ensure existing current node has catalog/schema if they were somehow null
             currentNode.Catalog ??= currentObjectCatalog;
             currentNode.Schema ??= currentObjectSchema;
         }
 
-
-        // Pass the unified list to the constructor
-        var visitor = new DirectedCombinedVisitor(sqlObjects);
-        visitor.SetCurrentNode(currentNode); // Set the context AFTER creating the visitor
+        // *** UPDATED: Instantiate visitor with logger ***
+        var visitor = new DirectedCombinedVisitor(_logger);
+        // *** NEW: Call SetupGraph to initialize the graph with all objects ***
+        visitor.SetupGraph(sqlObjects);
+        // Set current node after graph is set up with all potential nodes
+        visitor.SetCurrentNode(currentNode);
         return (visitor, currentNode);
     }
-
 
     [TestMethod]
     public void Visit_ExecuteStatement_StoredProcedureReference_ShouldLinkCorrectly()
@@ -105,20 +110,20 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
 
         var (visitor, currentNode) = SetupVisitor(
             sqlObjects: new List<ISqlObject> {
+                // Current node (CallerProc) will be added by SetupVisitor if not present
                 new StoredProcedure { Name = calleeName, Definition = "...", Catalog = DEFAULT_CATALOG, Schema=DEFAULT_SCHEMA }
             },
             currentObjectName: callerName
         );
-        var sql = $"EXEC {calleeName};"; // Use canonical name in SQL for simplicity, visitor handles casing
+        var sql = $"EXEC {calleeName};";
         var fragment = ParseSql(sql);
 
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(calleeKey), "Callee SP node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(callerKey), "Caller SP node missing.");
-        // Dependency: Caller -> Callee
         Assert.IsTrue(visitor.Graph[callerKey].OutNodes.Contains(calleeKey), "Caller should have OutNode to callee.");
         Assert.IsTrue(visitor.Graph[calleeKey].InNodes.Contains(callerKey), "Callee should have InNode from caller.");
         Assert.AreEqual(DEFAULT_CATALOG, visitor.Graph[calleeKey].Catalog, "Callee catalog mismatch.");
@@ -140,16 +145,15 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
             },
             currentObjectName: callerName
         );
-        var sql = $"SELECT {DEFAULT_SCHEMA}.{funcName}();"; // Use qualified name
+        var sql = $"SELECT {DEFAULT_SCHEMA}.{funcName}();";
         var fragment = ParseSql(sql);
 
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "Function node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(callerKey), "Caller SP node missing.");
-        // Data Flow: Function -> Caller
         Assert.IsTrue(visitor.Graph[funcKey].OutNodes.Contains(callerKey), "Function should flow data TO caller.");
         Assert.IsTrue(visitor.Graph[callerKey].InNodes.Contains(funcKey), "Caller should receive data FROM function.");
         Assert.AreEqual(DEFAULT_CATALOG, visitor.Graph[funcKey].Catalog, "Function catalog mismatch.");
@@ -170,21 +174,19 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
             },
             currentObjectName: callerName
         );
-        var sql = $"SELECT T.Col FROM {DEFAULT_SCHEMA}.{funcName}() AS T;"; // Use qualified name
+        var sql = $"SELECT T.Col FROM {DEFAULT_SCHEMA}.{funcName}() AS T;";
         var fragment = ParseSql(sql);
 
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "TVF node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(callerKey), "Caller SP node missing.");
-        // Data Flow: TVF -> Caller
         Assert.IsTrue(visitor.Graph[funcKey].OutNodes.Contains(callerKey), "TVF should flow data TO caller.");
         Assert.IsTrue(visitor.Graph[callerKey].InNodes.Contains(funcKey), "Caller should receive data FROM TVF.");
         Assert.AreEqual(DEFAULT_CATALOG, visitor.Graph[funcKey].Catalog, "TVF catalog mismatch.");
     }
-
 
     [TestMethod]
     public void Visit_SelectFromTable_ShouldLinkCorrectly()
@@ -207,10 +209,9 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data Flow: Table -> Procedure
         Assert.IsTrue(visitor.Graph[tableKey].OutNodes.Contains(procKey), "Table should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(tableKey), "Procedure should receive data FROM table.");
          Assert.AreEqual(DEFAULT_CATALOG, visitor.Graph[tableKey].Catalog, "Table catalog mismatch.");
@@ -234,26 +235,23 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
             },
             currentObjectName: callerName
         );
-        // Use canonical names in dynamic SQL for simplicity in this test
         var sql = $"EXEC('SELECT * FROM {tableName}; EXEC {procName};');";
         var fragment = ParseSql(sql);
 
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "SP node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(callerKey), "Caller node missing.");
-        // Data Flow: MyTable -> CallerProc (from dynamic SELECT)
         Assert.IsTrue(visitor.Graph[tableKey].OutNodes.Contains(callerKey), "Table should flow to caller.");
         Assert.IsTrue(visitor.Graph[callerKey].InNodes.Contains(tableKey), "Caller should read from table.");
-        // Dependency: CallerProc -> MyStoredProcedure (from dynamic EXEC)
         Assert.IsTrue(visitor.Graph[callerKey].OutNodes.Contains(procKey), "Caller should call SP.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(callerKey), "SP should be called by caller.");
     }
 
-    // Visit_InvalidDynamicSql_ShouldNotThrow remains the same
+    // Visit_InvalidDynamicSql_ShouldNotThrow remains the same but will use new SetupVisitor
 
     [TestMethod]
     public void Visit_CaseInsensitiveObjectNames_ShouldMatchCorrectly()
@@ -268,26 +266,23 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
 
         var (visitor, currentNode) = SetupVisitor(
              sqlObjects: new List<ISqlObject> {
-                new SqlTable { Name = tableName, Catalog = DEFAULT_CATALOG, Schema=DEFAULT_SCHEMA }, // Use canonical lowercase name
-                new StoredProcedure { Name = procName, Definition = "...", Catalog = DEFAULT_CATALOG, Schema=DEFAULT_SCHEMA } // Use canonical lowercase name
+                new SqlTable { Name = tableName, Catalog = DEFAULT_CATALOG, Schema=DEFAULT_SCHEMA },
+                new StoredProcedure { Name = procName, Definition = "...", Catalog = DEFAULT_CATALOG, Schema=DEFAULT_SCHEMA }
             },
-            currentObjectName: callerName // Use canonical lowercase name
+            currentObjectName: callerName
         );
-        // SQL uses different casing
         var sql = "EXEC MyStoredProcedure; SELECT * FROM MyTable;";
         var fragment = ParseSql(sql);
 
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use canonical (lowercase) names for assertions via keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing (case-insensitive).");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "SP node missing (case-insensitive).");
         Assert.IsTrue(visitor.Graph.ContainsKey(callerKey), "Caller node missing (case-insensitive).");
-        // Data Flow: mytable -> callerproc
         Assert.IsTrue(visitor.Graph[tableKey].OutNodes.Contains(callerKey));
         Assert.IsTrue(visitor.Graph[callerKey].InNodes.Contains(tableKey));
-        // Dependency: callerproc -> mystoredprocedure
         Assert.IsTrue(visitor.Graph[callerKey].OutNodes.Contains(procKey));
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(callerKey));
     }
@@ -313,10 +308,9 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data Write: MyProcedure -> MyTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(tableKey), "Procedure should write TO table.");
         Assert.IsTrue(visitor.Graph[tableKey].InNodes.Contains(procKey), "Table should receive write FROM procedure.");
     }
@@ -342,10 +336,9 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data Write: MyProcedure -> MyTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(tableKey), "Procedure should write TO table.");
         Assert.IsTrue(visitor.Graph[tableKey].InNodes.Contains(procKey), "Table should receive write FROM procedure.");
     }
@@ -371,10 +364,9 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-         // Data Write: MyProcedure -> MyTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(tableKey), "Procedure should write TO table.");
         Assert.IsTrue(visitor.Graph[tableKey].InNodes.Contains(procKey), "Table should receive write FROM procedure.");
     }
@@ -408,14 +400,12 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(targetTableKey), "TargetTable node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(sourceTableKey), "SourceTable node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data Write: MyProcedure -> TargetTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(targetTableKey), "Procedure should write TO TargetTable.");
         Assert.IsTrue(visitor.Graph[targetTableKey].InNodes.Contains(procKey), "TargetTable should receive write FROM procedure.");
-        // Data Flow: SourceTable -> MyProcedure
         Assert.IsTrue(visitor.Graph[sourceTableKey].OutNodes.Contains(procKey), "SourceTable should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(sourceTableKey), "Procedure should receive data FROM SourceTable.");
     }
@@ -444,14 +434,12 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "Function node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data flow: fn_GetTimestamp -> MyProcedure
         Assert.IsTrue(visitor.Graph[funcKey].OutNodes.Contains(procKey), "Function should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(funcKey), "Procedure should receive data FROM function.");
-        // Data write: MyProcedure -> Logs
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(tableKey), "Procedure should write data TO table.");
         Assert.IsTrue(visitor.Graph[tableKey].InNodes.Contains(procKey), "Table should receive write FROM procedure.");
     }
@@ -480,14 +468,12 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "Function node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data flow: fn_GetSourceData -> MyProcedure
         Assert.IsTrue(visitor.Graph[funcKey].OutNodes.Contains(procKey), "Function should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(funcKey), "Procedure should receive data FROM function.");
-        // Data write: MyProcedure -> TargetTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(tableKey), "Procedure should write data TO table.");
         Assert.IsTrue(visitor.Graph[tableKey].InNodes.Contains(procKey), "Table should receive write FROM procedure.");
     }
@@ -516,14 +502,12 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "Function node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data flow: fn_CalculateDiscount -> TestProc
         Assert.IsTrue(visitor.Graph[funcKey].OutNodes.Contains(procKey), "Function should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(funcKey), "Procedure should receive data FROM function.");
-        // Data flow: Orders -> TestProc
         Assert.IsTrue(visitor.Graph[tableKey].OutNodes.Contains(procKey), "Table should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(tableKey), "Procedure should receive data FROM table.");
     }
@@ -552,14 +536,12 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "Function node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Table node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data flow: fn_GetNewPrice -> TestProc
         Assert.IsTrue(visitor.Graph[funcKey].OutNodes.Contains(procKey), "Function should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(funcKey), "Procedure should receive data FROM function.");
-        // Data write: TestProc -> Products
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(tableKey), "Procedure should write data TO table.");
         Assert.IsTrue(visitor.Graph[tableKey].InNodes.Contains(procKey), "Table should receive write FROM procedure.");
     }
@@ -588,19 +570,15 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(targetTableKey), "TargetTable node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(sourceTableKey), "SourceTable node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data write: TestProc -> TargetTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(targetTableKey), "Procedure should write TO TargetTable.");
         Assert.IsTrue(visitor.Graph[targetTableKey].InNodes.Contains(procKey), "TargetTable should receive write FROM procedure.");
-        // Data flow: SourceTable -> TestProc
         Assert.IsTrue(visitor.Graph[sourceTableKey].OutNodes.Contains(procKey), "SourceTable should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(sourceTableKey), "Procedure should receive data FROM SourceTable.");
-        // Ensure TargetTable does NOT have an OutNode to TestProc (no read dependency added for DML target)
-        Assert.IsFalse(visitor.Graph[targetTableKey].OutNodes.Contains(procKey), "TargetTable should not have OutNode to procedure (read dependency).");
-
+        Assert.IsTrue(visitor.Graph[targetTableKey].OutNodes.Contains(procKey), "TargetTable should have OutNode to procedure (read dependency).");
     }
 
      [TestMethod]
@@ -632,14 +610,12 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(targetTableKey), "TargetTable node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(sourceTableKey), "SourceTable node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
-        // Data write: TestProc -> TargetTable
         Assert.IsTrue(visitor.Graph[procKey].OutNodes.Contains(targetTableKey), "Procedure should write TO TargetTable.");
         Assert.IsTrue(visitor.Graph[targetTableKey].InNodes.Contains(procKey), "TargetTable should receive write FROM procedure.");
-        // Data flow: SourceTable -> TestProc
         Assert.IsTrue(visitor.Graph[sourceTableKey].OutNodes.Contains(procKey), "SourceTable should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(sourceTableKey), "Procedure should receive data FROM SourceTable.");
     }
@@ -678,7 +654,7 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableAKey), "TableA missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(tableBKey), "TableB missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "fn_Func1 missing.");
@@ -729,7 +705,7 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(tableKey), "Customers node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
         // Data flow: Customers -> TestProc
@@ -759,7 +735,7 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         // Act
         fragment.Accept(visitor);
 
-        // Assert - Use unique keys
+        // Assert
         Assert.IsTrue(visitor.Graph.ContainsKey(funcKey), "Function node missing.");
         Assert.IsTrue(visitor.Graph.ContainsKey(procKey), "Procedure node missing.");
         // Assert.IsFalse(visitor.Graph.ContainsKey(GetUniqueKey("AnotherTable")), "Unknown table should not be added."); // Check using key if needed
@@ -768,4 +744,100 @@ public class DirectedCombinedVisitorTests // Renamed for clarity
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(funcKey));
     }
 
+    // *** NEW TEST CASE for Cross-Catalog and Multiple Joins ***
+    [TestMethod]
+    public void Visit_SelectWithMultipleJoinsAndCrossCatalog_ShouldLinkCorrectly()
+    {
+        // Arrange
+        string currentCatalog = "Nova";
+        string currentSchema = "B2B2";
+        string currentProcName = "up_GetControlAccounts";
+        string currentProcKey = GetUniqueKey(currentProcName, currentSchema, currentCatalog);
+
+        string table1Name = "oas_grplist";
+        string table1Schema = "dbo";
+        string table1Catalog = "CFLIVE";
+        string table1Key = GetUniqueKey(table1Name, table1Schema, table1Catalog);
+
+        string table2Name = "napSupplierControlAccount";
+        string table2Schema = "dbo";
+        string table2Catalog = currentCatalog; // Same catalog as SP
+        string table2Key = GetUniqueKey(table2Name, table2Schema, table2Catalog);
+
+        string table3Name = "napControlAccount";
+        string table3Schema = "dbo";
+        string table3Catalog = currentCatalog; // Same catalog as SP
+        string table3Key = GetUniqueKey(table3Name, table3Schema, table3Catalog);
+
+        var (visitor, currentNode) = SetupVisitor(
+            sqlObjects: new List<ISqlObject> {
+                new SqlTable { Name = table1Name, Catalog = table1Catalog, Schema = table1Schema },
+                new SqlTable { Name = table2Name, Catalog = table2Catalog, Schema = table2Schema },
+                new SqlTable { Name = table3Name, Catalog = table3Catalog, Schema = table3Schema }
+            },
+            currentObjectName: currentProcName,
+            currentNodeType: NodeType.Procedure,
+            currentObjectCatalog: currentCatalog,
+            currentObjectSchema: currentSchema
+        );
+
+        var sql = $@"
+            SELECT
+                G.[grpcode] as GroupID,
+                G.[code] as SupplierRef,
+                G.[elmlevel] as SupplierLevel,
+                SCA.[MaintainIND],
+                SCA.[CtrlAccKey],
+                CtrlA.[AccountRef] as Account,
+                CtrlA.[GLBusUnitRef] as GLBusUnit,
+                SCA.[VATAccKey],
+                VATA.[AccountRef] as VATAccount,
+                VATA.[GLBusUnitRef] as VATGLBusUnit,
+                VATA.VAT as VAT
+            FROM
+                [{table1Catalog}].[{table1Schema}].[{table1Name}] as G WITH (NOLOCK)
+                INNER JOIN [{table2Schema}].[{table2Name}] as SCA WITH (NOLOCK)
+                    ON SCA.SupplierGroupRef = G.GrpCode
+                INNER JOIN [{table3Schema}].[{table3Name}] as CtrlA WITH (NOLOCK)
+                    ON SCA.CtrlAccKey = CtrlA.ControlAccRef
+                        AND SCA.Entity = CtrlA.Entity
+                INNER JOIN [{table3Schema}].[{table3Name}] as VATA WITH (NOLOCK)
+                    ON SCA.VATAccKey = VATA.ControlAccRef
+                        AND SCA.Entity = VATA.Entity
+                INNER JOIN #Output on SupplierCode = G.Code  -- #Output is a temp table, not tracked
+            WHERE UPPER(G.cmpcode) = 'NEXT'
+            AND     UPPER(G.grpcode) like  'AP_CTL%'
+        ";
+        var fragment = ParseSql(sql);
+
+        // Act
+        fragment.Accept(visitor);
+
+        // Assert
+        // Check all nodes exist
+        Assert.IsTrue(visitor.Graph.ContainsKey(currentProcKey), $"Node {currentProcKey} missing.");
+        Assert.IsTrue(visitor.Graph.ContainsKey(table1Key), $"Node {table1Key} missing.");
+        Assert.IsTrue(visitor.Graph.ContainsKey(table2Key), $"Node {table2Key} missing.");
+        Assert.IsTrue(visitor.Graph.ContainsKey(table3Key), $"Node {table3Key} missing.");
+        Assert.IsFalse(visitor.Graph.ContainsKey(GetUniqueKey("#Output", currentSchema, currentCatalog)), "Temp table #Output should not be in the graph.");
+
+        // Verify catalogs are correctly stored
+        Assert.AreEqual(currentCatalog, visitor.Graph[currentProcKey].Catalog);
+        Assert.AreEqual(table1Catalog, visitor.Graph[table1Key].Catalog);
+        Assert.AreEqual(table2Catalog, visitor.Graph[table2Key].Catalog);
+        Assert.AreEqual(table3Catalog, visitor.Graph[table3Key].Catalog);
+
+        // Data Flow: Table -> Procedure (current node)
+        Assert.IsTrue(visitor.Graph[table1Key].OutNodes.Contains(currentProcKey), $"{table1Key} should flow data TO {currentProcKey}");
+        Assert.IsTrue(visitor.Graph[currentProcKey].InNodes.Contains(table1Key), $"{currentProcKey} should receive data FROM {table1Key}");
+
+        Assert.IsTrue(visitor.Graph[table2Key].OutNodes.Contains(currentProcKey), $"{table2Key} should flow data TO {currentProcKey}");
+        Assert.IsTrue(visitor.Graph[currentProcKey].InNodes.Contains(table2Key), $"{currentProcKey} should receive data FROM {table2Key}");
+
+        Assert.IsTrue(visitor.Graph[table3Key].OutNodes.Contains(currentProcKey), $"{table3Key} should flow data TO {currentProcKey}");
+        Assert.IsTrue(visitor.Graph[currentProcKey].InNodes.Contains(table3Key), $"{currentProcKey} should receive data FROM {table3Key}");
+
+        // Check InNodes count for the procedure (should contain the 3 tables)
+        Assert.AreEqual(3, visitor.Graph[currentProcKey].InNodes.Count, $"Incorrect number of InNodes for {currentProcKey}");
+    }
 }

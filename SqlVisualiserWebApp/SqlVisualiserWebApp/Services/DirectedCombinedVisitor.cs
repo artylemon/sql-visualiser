@@ -9,25 +9,27 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Microsoft.Extensions.Logging; // Assuming ILogger is used
 
 public class DirectedCombinedVisitor : TSqlFragmentVisitor
 {
-    private ISqlObject? _currentSqlObject = null; // Still needed for context (schema/catalog defaults)
-    private string? _currentNodeKey = null; // Store the unique key of the current node
+    private ISqlObject? _currentSqlObject = null;
+    private string? _currentNodeKey = null;
+    private readonly ILogger<SqlVisualiserService> _logger;
     private readonly TSql150Parser _dynamicSqlParser;
     private string? _currentDmlTargetTableKey = null;
 
-    // Graph uses OrdinalIgnoreCase for the unique keys ([Catalog].[Schema].[Name])
     public Dictionary<string, DirectedGraphNode> Graph { get; } = new Dictionary<string, DirectedGraphNode>(StringComparer.OrdinalIgnoreCase);
 
-    // *** UPDATED: Constructor populates the Graph directly ***
-    public DirectedCombinedVisitor(List<ISqlObject> sqlObjects)
+    public DirectedCombinedVisitor(ILogger<SqlVisualiserService> logger)
     {
-        // _sqlObjects list is no longer stored as a field, only used here
-        var initialObjects = sqlObjects ?? throw new ArgumentNullException(nameof(sqlObjects));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _dynamicSqlParser = new TSql150Parser(false);
+    }
 
-        // Pre-populate the Graph with all known objects
+    public void SetupGraph(List<ISqlObject> sqlObjects)
+    {
+        var initialObjects = sqlObjects ?? throw new ArgumentNullException(nameof(sqlObjects));
         foreach (var obj in initialObjects)
         {
             if (obj == null || string.IsNullOrWhiteSpace(obj.Name))
@@ -38,20 +40,18 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             obj.Catalog ??= "Unknown";
             obj.Schema ??= "dbo";
             string key = GetUniqueNodeKey(obj);
-
             if (!Graph.ContainsKey(key))
             {
                 Graph.Add(key, new DirectedGraphNode(obj.Name, obj.Type, obj.Catalog));
             }
             else
             {
-                // This indicates an issue with the input list having exact duplicates (same catalog.schema.name)
-                Console.Error.WriteLine($"Warning: Duplicate object key detected during initial graph population: {key}");
+                _logger.LogWarning($"Warning: Duplicate object key detected during initial graph population: {key}");
             }
         }
     }
 
-    // --- Unique Key Generation (remains the same) ---
+    // --- Unique Key Generation ---
     private string GetUniqueNodeKey(ISqlObject obj)
     {
         return $"[{obj.Catalog ?? "Unknown"}].[{obj.Schema ?? "dbo"}].[{obj.Name}]";
@@ -69,32 +69,32 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         return $"[{catalog ?? "Unknown"}].[{schema ?? "Unknown"}].[{name}]";
     }
     // --- End Key Generation ---
+
     public void SetCurrentNode(ISqlObject sqlObject)
     {
         if (sqlObject == null || string.IsNullOrWhiteSpace(sqlObject.Name))
         {
-            Console.Error.WriteLine("Attempted to set current node with null or empty name.");
+            _logger.LogWarning("Attempted to set current node with null or empty name.");
             _currentSqlObject = null;
             _currentNodeKey = null;
             return;
         }
 
         _currentSqlObject = sqlObject;
-        _currentNodeKey = GetUniqueNodeKey(_currentSqlObject); // Store the key
+        _currentNodeKey = GetUniqueNodeKey(_currentSqlObject);
 
-        // Ensure node exists in graph (should have been added in constructor, but check for safety)
         if (!Graph.ContainsKey(_currentNodeKey))
         {
-            Console.Error.WriteLine($"Warning: Current node key '{_currentNodeKey}' not found in pre-populated graph. Adding it now.");
-            Graph[_currentNodeKey] = new DirectedGraphNode(
-               _currentSqlObject.Name,
-               _currentSqlObject.Type,
-               _currentSqlObject.Catalog ?? "Unknown"
-           );
+             _logger.LogWarning($"Warning: Current node key '{_currentNodeKey}' not found in pre-populated graph. Adding it now.");
+             Graph[_currentNodeKey] = new DirectedGraphNode(
+                _currentSqlObject.Name,
+                _currentSqlObject.Type,
+                _currentSqlObject.Catalog ?? "Unknown"
+            );
         }
     }
 
-    // --- Dependency Helpers (Now only need keys) ---
+    // --- Dependency Helpers ---
     private void AddDataFlowDependency(string sourceKey, string consumerKey)
     {
         if (string.IsNullOrWhiteSpace(consumerKey) || string.IsNullOrWhiteSpace(sourceKey))
@@ -102,40 +102,36 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
-        // Check if both nodes exist in the graph before adding edge
         if (Graph.ContainsKey(sourceKey) && Graph.ContainsKey(consumerKey))
         {
             if (!sourceKey.Equals(consumerKey, StringComparison.OrdinalIgnoreCase))
             {
-                Graph[sourceKey].OutNodes.Add(consumerKey);
-                Graph[consumerKey].InNodes.Add(sourceKey);
+                 Graph[sourceKey].OutNodes.Add(consumerKey);
+                 Graph[consumerKey].InNodes.Add(sourceKey);
             }
-        }
-        else
+        } else
         {
-            Console.Error.WriteLine($"Could not add data flow edge. Source Key ('{sourceKey}' exists: {Graph.ContainsKey(sourceKey)}) or Consumer Key ('{consumerKey}' exists: {Graph.ContainsKey(consumerKey)}) not found in graph.");
+            _logger.LogWarning($"Could not add data flow edge. Source Key ('{sourceKey}' exists: {Graph.ContainsKey(sourceKey)}) or Consumer Key ('{consumerKey}' exists: {Graph.ContainsKey(consumerKey)}) not found in graph.");
         }
     }
 
     private void AddDataWriteDependency(string modifierKey, string targetKey)
     {
-        if (string.IsNullOrWhiteSpace(modifierKey) || string.IsNullOrWhiteSpace(targetKey))
+         if (string.IsNullOrWhiteSpace(modifierKey) || string.IsNullOrWhiteSpace(targetKey))
         {
             return;
         }
 
-        // Check if both nodes exist and target is a table
         if (Graph.TryGetValue(targetKey, out var targetNode) && targetNode.Type == NodeType.Table && Graph.ContainsKey(modifierKey))
-        {
+         {
             if (!modifierKey.Equals(targetKey, StringComparison.OrdinalIgnoreCase))
             {
                 Graph[modifierKey].OutNodes.Add(targetKey);
                 Graph[targetKey].InNodes.Add(modifierKey);
             }
-        }
-        else
+         } else
         {
-            Console.Error.WriteLine($"Could not add data write edge. Modifier Key ('{modifierKey}' exists: {Graph.ContainsKey(modifierKey)}) or Target Key ('{targetKey}' exists and is Table: {Graph.ContainsKey(targetKey) && Graph[targetKey].Type == NodeType.Table}) condition not met.");
+            _logger.LogWarning($"Could not add data write edge. Modifier Key ('{modifierKey}' exists: {Graph.ContainsKey(modifierKey)}) or Target Key ('{targetKey}' exists and is Table: {Graph.ContainsKey(targetKey) && Graph.TryGetValue(targetKey, out var node) && node.Type == NodeType.Table}) condition not met.");
         }
     }
 
@@ -146,7 +142,6 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
-        // Check if both nodes exist
         if (Graph.ContainsKey(callerKey) && Graph.ContainsKey(calleeKey))
         {
             if (!callerKey.Equals(calleeKey, StringComparison.OrdinalIgnoreCase))
@@ -154,16 +149,14 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                 Graph[callerKey].OutNodes.Add(calleeKey);
                 Graph[calleeKey].InNodes.Add(callerKey);
             }
-        }
-        else
+        } else
         {
-            Console.Error.WriteLine($"Could not add potential dependency edge. Caller Key ('{callerKey}' exists: {Graph.ContainsKey(callerKey)}) or Callee Key ('{calleeKey}' exists: {Graph.ContainsKey(calleeKey)}) not found in graph.");
+            _logger.LogWarning($"Could not add potential dependency edge. Caller Key ('{callerKey}' exists: {Graph.ContainsKey(callerKey)}) or Callee Key ('{calleeKey}' exists: {Graph.ContainsKey(calleeKey)}) not found in graph.");
         }
     }
     // --- End Dependency Helpers ---
 
-    // --- Visit Methods (Updated to use Graph.ContainsKey and pass keys to helpers) ---
-
+    // --- Visit Methods ---
     public override void Visit(FunctionCall node)
     {
         if (_currentSqlObject == null || _currentNodeKey == null || node.FunctionName == null)
@@ -174,10 +167,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         var tempSchemaObjName = new SchemaObjectName();
         tempSchemaObjName.Identifiers.Add(node.FunctionName);
-        // Resolve key using current context
         string functionKey = GetUniqueNodeKey(tempSchemaObjName, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-
-        // Check if the resolved key corresponds to a known function in the graph
         if (Graph.TryGetValue(functionKey, out var graphNode) && (graphNode.Type == NodeType.Function))
         {
             AddDataFlowDependency(functionKey, _currentNodeKey);
@@ -194,9 +184,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
-        // Resolve key using current context
         string functionKey = GetUniqueNodeKey(node.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-
         if (Graph.TryGetValue(functionKey, out var graphNode) && (graphNode.Type == NodeType.Function))
         {
             AddDataFlowDependency(functionKey, _currentNodeKey);
@@ -207,16 +195,15 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
     public override void Visit(NamedTableReference node)
     {
-        if (_currentSqlObject == null || _currentNodeKey == null || node.SchemaObject == null)
+         if (_currentSqlObject == null || _currentNodeKey == null || node.SchemaObject == null)
         {
             base.Visit(node);
             return;
         }
 
-        // Resolve key using current context
         string referencedKey = GetUniqueNodeKey(node.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
 
-        if (Graph.TryGetValue(referencedKey, out var referencedNode)) // Check if the object exists in our graph
+        if (Graph.TryGetValue(referencedKey, out var referencedNode))
         {
             bool isCurrentDmlTarget = !string.IsNullOrWhiteSpace(_currentDmlTargetTableKey) &&
                                       referencedKey.Equals(_currentDmlTargetTableKey, StringComparison.OrdinalIgnoreCase);
@@ -227,10 +214,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             }
             else if (referencedNode.Type == NodeType.Function)
             {
-                // TVFs used like tables always flow data to consumer
-                AddDataFlowDependency(referencedKey, _currentNodeKey);
+                 AddDataFlowDependency(referencedKey, _currentNodeKey);
             }
-            // Add logic for Views if needed
         }
 
         base.Visit(node);
@@ -241,10 +226,74 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         if (_currentSqlObject == null)
         {
             base.Visit(node);
-            return;
-        }
+            return; }
 
         base.Visit(node);
+    }
+
+    // --- DML Statements (Updated to resolve target alias) ---
+    private SchemaObjectName? ResolveDmlTargetAlias(NamedTableReference targetAliasNode, FromClause? fromClause)
+    {
+        if (targetAliasNode.SchemaObject == null)
+        {
+            return null; // Alias node itself must have a schema object (even if just BaseIdentifier)
+        }
+
+        string aliasToFind = targetAliasNode.SchemaObject.BaseIdentifier.Value;
+        if (string.IsNullOrWhiteSpace(aliasToFind))
+        {
+            return null;
+        }
+
+        _logger.LogTrace($"ResolveDmlTargetAlias: Attempting to resolve alias '{aliasToFind}' for DML target.");
+
+        if (fromClause == null)
+        {
+            _logger.LogTrace($"ResolveDmlTargetAlias: No FROM clause provided for alias '{aliasToFind}'. Returning original target node.");
+            return targetAliasNode.SchemaObject; // Cannot resolve without a FROM clause to check
+        }
+
+        SchemaObjectName? FindAliasedObjectInTableRef(TableReference tableRef)
+        {
+            if (tableRef is NamedTableReference namedRef)
+            {
+                // _logger.LogTrace($"ResolveDmlTargetAlias (FindAliasedObjectInTableRef): Checking NamedTableReference '{namedRef.SchemaObject?.BaseIdentifier?.Value}' with alias '{namedRef.Alias?.Value}'.");
+                if (namedRef.Alias != null && namedRef.Alias.Value.Equals(aliasToFind, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogTrace($"ResolveDmlTargetAlias: Found alias '{aliasToFind}' pointing to '{namedRef.SchemaObject?.BaseIdentifier?.Value}'.");
+                    return namedRef.SchemaObject;
+                }
+            }
+            else if (tableRef is QualifiedJoin qualifiedJoin)
+            {
+                // _logger.LogTrace("ResolveDmlTargetAlias (FindAliasedObjectInTableRef): Recursing into QualifiedJoin.");
+                var firstResult = FindAliasedObjectInTableRef(qualifiedJoin.FirstTableReference);
+                if (firstResult != null)
+                {
+                    return firstResult;
+                }
+
+                var secondResult = FindAliasedObjectInTableRef(qualifiedJoin.SecondTableReference);
+                if (secondResult != null)
+                {
+                    return secondResult;
+                }
+            }
+            // Add other TableReference types if needed (e.g., PivotedTableReference, UnpivotedTableReference, OpenRowset...)
+            return null;
+        }
+
+        foreach (var tableReference in fromClause.TableReferences)
+        {
+            var resolvedSchemaObject = FindAliasedObjectInTableRef(tableReference);
+            if (resolvedSchemaObject != null)
+            {
+                return resolvedSchemaObject;
+            }
+        }
+
+        _logger.LogTrace($"ResolveDmlTargetAlias: Alias '{aliasToFind}' not found in FROM clause. Returning original target node.");
+        return targetAliasNode.SchemaObject; // Fallback: if alias not found in FROM, assume the target itself is the object name
     }
 
     public override void Visit(InsertStatement node)
@@ -259,7 +308,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         if (node.InsertSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
         {
-            // Resolve key using current context
+            // INSERT target is typically not aliased via a FROM clause in the same statement.
+            // The SchemaObject of the NamedTableReference should be the actual table.
             string targetKey = GetUniqueNodeKey(namedTable.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
             if (Graph.TryGetValue(targetKey, out var targetNode) && targetNode.Type == NodeType.Table)
             {
@@ -288,14 +338,23 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
-        if (node.UpdateSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
+        if (node.UpdateSpecification?.Target is NamedTableReference targetRefNode && targetRefNode.SchemaObject != null)
         {
-            // Resolve key using current context
-            string targetKey = GetUniqueNodeKey(namedTable.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-            if (Graph.TryGetValue(targetKey, out var targetNode) && targetNode.Type == NodeType.Table)
+            SchemaObjectName actualTargetSchemaObject = targetRefNode.SchemaObject;
+            // Only try to resolve alias if the target is a simple, unqualified identifier
+            if (targetRefNode.SchemaObject.DatabaseIdentifier == null && targetRefNode.SchemaObject.SchemaIdentifier == null)
             {
-                AddDataWriteDependency(_currentNodeKey, targetKey);
-                _currentDmlTargetTableKey = targetKey;
+                 actualTargetSchemaObject = ResolveDmlTargetAlias(targetRefNode, node.UpdateSpecification.FromClause) ?? targetRefNode.SchemaObject;
+            }
+
+            string targetKey = GetUniqueNodeKey(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
+            if (Graph.TryGetValue(targetKey, out var targetGraphNode) && targetGraphNode.Type == NodeType.Table)
+            {
+                 AddDataWriteDependency(_currentNodeKey, targetKey);
+                 _currentDmlTargetTableKey = targetKey;
+            } else
+            {
+                _logger.LogWarning($"UPDATE target '{actualTargetSchemaObject.BaseIdentifier.Value}' (resolved to key '{targetKey}') not found in graph or not a table for current node {_currentNodeKey}.");
             }
         }
 
@@ -313,20 +372,28 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     {
         string? originalDmlTargetKey = _currentDmlTargetTableKey;
         _currentDmlTargetTableKey = null;
-        if (_currentSqlObject == null || _currentNodeKey == null)
+         if (_currentSqlObject == null || _currentNodeKey == null)
         {
             base.Visit(node);
             return;
         }
 
-        if (node.DeleteSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
+        if (node.DeleteSpecification?.Target is NamedTableReference targetRefNode && targetRefNode.SchemaObject != null)
         {
-            // Resolve key using current context
-            string targetKey = GetUniqueNodeKey(namedTable.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-            if (Graph.TryGetValue(targetKey, out var targetNode) && targetNode.Type == NodeType.Table)
+            SchemaObjectName actualTargetSchemaObject = targetRefNode.SchemaObject;
+            if (targetRefNode.SchemaObject.DatabaseIdentifier == null && targetRefNode.SchemaObject.SchemaIdentifier == null)
             {
-                AddDataWriteDependency(_currentNodeKey, targetKey);
-                _currentDmlTargetTableKey = targetKey;
+                 actualTargetSchemaObject = ResolveDmlTargetAlias(targetRefNode, node.DeleteSpecification.FromClause) ?? targetRefNode.SchemaObject;
+            }
+
+            string targetKey = GetUniqueNodeKey(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
+             if (Graph.TryGetValue(targetKey, out var targetGraphNode) && targetGraphNode.Type == NodeType.Table)
+            {
+                 AddDataWriteDependency(_currentNodeKey, targetKey);
+                 _currentDmlTargetTableKey = targetKey;
+            } else
+            {
+                _logger.LogWarning($"DELETE target '{actualTargetSchemaObject.BaseIdentifier.Value}' (resolved to key '{targetKey}') not found in graph or not a table for current node {_currentNodeKey}.");
             }
         }
 
@@ -350,14 +417,21 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
-        if (node.MergeSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
+        if (node.MergeSpecification?.Target is NamedTableReference targetRefNode && targetRefNode.SchemaObject != null)
         {
-            // Resolve key using current context
-            string targetKey = GetUniqueNodeKey(namedTable.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-            if (Graph.TryGetValue(targetKey, out var targetNode) && targetNode.Type == NodeType.Table)
+            // For MERGE, the targetRefNode.SchemaObject IS the actual table, even if aliased in the MERGE statement itself.
+            // The alias is part of the targetRefNode, but SchemaObject refers to the base.
+            // ResolveDmlTargetAlias might be overly complex here if the USING clause is passed.
+            SchemaObjectName actualTargetSchemaObject = targetRefNode.SchemaObject;
+
+            string targetKey = GetUniqueNodeKey(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
+            if (Graph.TryGetValue(targetKey, out var targetGraphNode) && targetGraphNode.Type == NodeType.Table)
             {
-                AddDataWriteDependency(_currentNodeKey, targetKey);
-                _currentDmlTargetTableKey = targetKey;
+                 AddDataWriteDependency(_currentNodeKey, targetKey);
+                 _currentDmlTargetTableKey = targetKey;
+            } else
+            {
+                _logger.LogWarning($"MERGE target '{actualTargetSchemaObject.BaseIdentifier.Value}' (resolved to key '{targetKey}') not found in graph or not a table for current node {_currentNodeKey}.");
             }
         }
 
@@ -381,24 +455,22 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         if (node.ExecuteSpecification?.ExecutableEntity is ExecutableProcedureReference procedureReference)
         {
-            if (procedureReference.ProcedureReference?.ProcedureReference.Name != null)
+            if(procedureReference.ProcedureReference?.ProcedureReference?.Name != null)
             {
-                // Resolve key using current context
-                string calleeKey = GetUniqueNodeKey(procedureReference.ProcedureReference.ProcedureReference.Name, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-                // Check if the resolved callee exists in the graph
-                if (Graph.ContainsKey(calleeKey))
+                 string calleeKey = GetUniqueNodeKey(procedureReference.ProcedureReference.ProcedureReference?.Name, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
+                 if(Graph.ContainsKey(calleeKey))
                 {
-                    HandlePotentialDependency(_currentNodeKey, calleeKey); // Pass keys
+                    HandlePotentialDependency(_currentNodeKey, calleeKey);
                 }
                 else
                 {
-                    Console.Error.WriteLine($"Could not resolve EXEC target '{procedureReference.ProcedureReference.ProcedureReference.Name.BaseIdentifier.Value}' with current context to a known object key '{calleeKey}'.");
+                    _logger.LogWarning($"Could not resolve EXEC target '{procedureReference.ProcedureReference.ProcedureReference?.Name.BaseIdentifier.Value}' with current context to a known object key '{calleeKey}'.");
                 }
             }
         }
         else if (node.ExecuteSpecification?.ExecutableEntity is ExecutableStringList stringList)
         {
-            foreach (var sqlString in stringList.Strings)
+             foreach (var sqlString in stringList.Strings)
             {
                 if (sqlString is ValueExpression valExpr)
                 {
@@ -422,10 +494,10 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
+        string currentContextKey = GetUniqueNodeKey(_currentSqlObject);
         try
         {
-            string dynamicSql = string.Join("", sqlExpression.ScriptTokenStream
-                .Skip(sqlExpression.FirstTokenIndex).Take(sqlExpression.LastTokenIndex - sqlExpression.FirstTokenIndex + 1).Select(t => t.Text));
+            string dynamicSql = string.Join("", sqlExpression.ScriptTokenStream .Skip(sqlExpression.FirstTokenIndex).Take(sqlExpression.LastTokenIndex - sqlExpression.FirstTokenIndex + 1).Select(t => t.Text));
             if (dynamicSql.StartsWith("'") && dynamicSql.EndsWith("'"))
             {
                 dynamicSql = dynamicSql.Substring(1, dynamicSql.Length - 2).Replace("''", "'");
@@ -445,19 +517,19 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                 var fragment = _dynamicSqlParser.Parse(reader, out var errors);
                 if (errors != null && errors.Count > 0)
                 {
-                    Console.Error.WriteLine($"Errors parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {string.Join("; ", errors.Select(e => e.Message))}");
+                    _logger.LogWarning($"Errors parsing dynamic SQL within {currentContextKey}: {string.Join("; ", errors.Select(e => e.Message))}");
                     return;
                 }
 
                 if (fragment != null)
                 {
                     fragment.Accept(this);
-                } // Recursive call maintains _currentSqlObject context
+                }
             }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Exception parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {ex.Message}");
+            _logger.LogError(ex, $"Exception parsing dynamic SQL within {currentContextKey}. SQL: {sqlExpression.ToString() ?? "NULL"}");
         }
     }
 }
