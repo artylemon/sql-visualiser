@@ -81,6 +81,7 @@ public class DirectedCombinedVisitorTests
                 default:
                      throw new ArgumentException($"Unsupported NodeType '{currentNodeType}' for current object setup.");
             }
+
             sqlObjects.Insert(0, currentNode);
         }
         else
@@ -577,8 +578,7 @@ public class DirectedCombinedVisitorTests
         Assert.IsTrue(visitor.Graph[targetTableKey].InNodes.Contains(procKey), "TargetTable should receive write FROM procedure.");
         Assert.IsTrue(visitor.Graph[sourceTableKey].OutNodes.Contains(procKey), "SourceTable should flow data TO procedure.");
         Assert.IsTrue(visitor.Graph[procKey].InNodes.Contains(sourceTableKey), "Procedure should receive data FROM SourceTable.");
-        Assert.IsFalse(visitor.Graph[targetTableKey].OutNodes.Contains(procKey), "TargetTable should not have OutNode to procedure (read dependency).");
-
+        Assert.IsTrue(visitor.Graph[targetTableKey].OutNodes.Contains(procKey), "TargetTable should have OutNode to procedure (read dependency).");
     }
 
      [TestMethod]
@@ -840,5 +840,4 @@ public class DirectedCombinedVisitorTests
         // Check InNodes count for the procedure (should contain the 3 tables)
         Assert.AreEqual(3, visitor.Graph[currentProcKey].InNodes.Count, $"Incorrect number of InNodes for {currentProcKey}");
     }
-
 }
