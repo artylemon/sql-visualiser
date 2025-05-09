@@ -66,34 +66,16 @@
             try
             {
                 this._logger.LogInformation("Starting directed database analysis for the provided data source and catalogs.");
-                var combinedGraph = new Dictionary<string, DirectedGraphNode>();
 
-                foreach (var catalog in request.Catalogs)
-                {
-                    var connectionString = this._sqlVisualiserService.BuildConnectionString(request.DataSource, catalog);
-                    var graph = this._sqlVisualiserService.BuildDirectedDatabaseGraph(connectionString, catalog);
-
-                    // Merge graphs
-                    foreach (var node in graph)
-                    {
-                        if (!combinedGraph.ContainsKey(node.Key))
-                        {
-                            combinedGraph[node.Key] = node.Value;
-                        }
-                        else
-                        {
-                            combinedGraph[node.Key].InNodes.UnionWith(node.Value.InNodes);
-                            combinedGraph[node.Key].OutNodes.UnionWith(node.Value.OutNodes);
-                        }
-                    }
-                }
+                // Call the updated BuildDirectedDatabaseGraph method
+                var graph = this._sqlVisualiserService.BuildDirectedDatabaseGraph(request.DataSource, request.Catalogs);
 
                 this._logger.LogInformation("Directed database analysis completed successfully.");
                 return this.Json(new
                 {
                     success = true,
                     message = "Directed database analysis completed successfully.",
-                    graph = combinedGraph
+                    graph = graph
                 });
             }
             catch (InvalidOperationException ex)

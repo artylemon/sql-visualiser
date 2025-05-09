@@ -14,21 +14,24 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 {
     private ISqlObject? _currentSqlObject = null; // Still needed for context (schema/catalog defaults)
     private string? _currentNodeKey = null; // Store the unique key of the current node
+    private readonly ILogger<SqlVisualiserService> _logger;
     private readonly TSql150Parser _dynamicSqlParser;
     private string? _currentDmlTargetTableKey = null;
 
     // Graph uses OrdinalIgnoreCase for the unique keys ([Catalog].[Schema].[Name])
     public Dictionary<string, DirectedGraphNode> Graph { get; } = new Dictionary<string, DirectedGraphNode>(StringComparer.OrdinalIgnoreCase);
 
-    // *** UPDATED: Constructor populates the Graph directly ***
-    public DirectedCombinedVisitor(List<ISqlObject> sqlObjects)
+    public DirectedCombinedVisitor(ILogger<SqlVisualiserService> logger)
     {
-        // _sqlObjects list is no longer stored as a field, only used here
-        var initialObjects = sqlObjects ?? throw new ArgumentNullException(nameof(sqlObjects));
+        this._logger = logger;
         _dynamicSqlParser = new TSql150Parser(false);
+    }
 
-        // Pre-populate the Graph with all known objects
-        foreach (var obj in initialObjects)
+    public void SetupGraph(List<ISqlObject> sqlObjects)
+    {
+        ArgumentNullException.ThrowIfNull(sqlObjects);
+
+        foreach (var obj in sqlObjects)
         {
             if (obj == null || string.IsNullOrWhiteSpace(obj.Name))
             {
@@ -45,8 +48,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             }
             else
             {
-                // This indicates an issue with the input list having exact duplicates (same catalog.schema.name)
-                Console.Error.WriteLine($"Warning: Duplicate object key detected during initial graph population: {key}");
+                // Log a warning for duplicate keys
+                _logger.LogWarning($"Warning: Duplicate object key detected during graph setup: {key}");
             }
         }
     }
@@ -56,6 +59,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     {
         return $"[{obj.Catalog ?? "Unknown"}].[{obj.Schema ?? "dbo"}].[{obj.Name}]";
     }
+
     private string GetUniqueNodeKey(SchemaObjectName schemaObjectName, string defaultCatalog, string defaultSchema)
     {
         string? catalog = schemaObjectName.DatabaseIdentifier?.Value ?? defaultCatalog;
@@ -68,12 +72,13 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         return $"[{catalog ?? "Unknown"}].[{schema ?? "Unknown"}].[{name}]";
     }
+
     // --- End Key Generation ---
     public void SetCurrentNode(ISqlObject sqlObject)
     {
         if (sqlObject == null || string.IsNullOrWhiteSpace(sqlObject.Name))
         {
-            Console.Error.WriteLine("Attempted to set current node with null or empty name.");
+            _logger.LogWarning("Attempted to set current node with null or empty name.");
             _currentSqlObject = null;
             _currentNodeKey = null;
             return;
@@ -85,7 +90,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         // Ensure node exists in graph (should have been added in constructor, but check for safety)
         if (!Graph.ContainsKey(_currentNodeKey))
         {
-            Console.Error.WriteLine($"Warning: Current node key '{_currentNodeKey}' not found in pre-populated graph. Adding it now.");
+            _logger.LogWarning($"Warning: Current node key '{_currentNodeKey}' not found in pre-populated graph. Adding it now.");
             Graph[_currentNodeKey] = new DirectedGraphNode(
                _currentSqlObject.Name,
                _currentSqlObject.Type,
@@ -113,7 +118,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         }
         else
         {
-            Console.Error.WriteLine($"Could not add data flow edge. Source Key ('{sourceKey}' exists: {Graph.ContainsKey(sourceKey)}) or Consumer Key ('{consumerKey}' exists: {Graph.ContainsKey(consumerKey)}) not found in graph.");
+            _logger.LogWarning($"Could not add data flow edge. Source Key ('{sourceKey}' exists: {Graph.ContainsKey(sourceKey)}) or Consumer Key ('{consumerKey}' exists: {Graph.ContainsKey(consumerKey)}) not found in graph.");
         }
     }
 
@@ -135,7 +140,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         }
         else
         {
-            Console.Error.WriteLine($"Could not add data write edge. Modifier Key ('{modifierKey}' exists: {Graph.ContainsKey(modifierKey)}) or Target Key ('{targetKey}' exists and is Table: {Graph.ContainsKey(targetKey) && Graph[targetKey].Type == NodeType.Table}) condition not met.");
+            _logger.LogWarning($"Could not add data write edge. Modifier Key ('{modifierKey}' exists: {Graph.ContainsKey(modifierKey)}) or Target Key ('{targetKey}' exists and is Table: {Graph.ContainsKey(targetKey) && Graph[targetKey].Type == NodeType.Table}) condition not met.");
         }
     }
 
@@ -157,7 +162,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         }
         else
         {
-            Console.Error.WriteLine($"Could not add potential dependency edge. Caller Key ('{callerKey}' exists: {Graph.ContainsKey(callerKey)}) or Callee Key ('{calleeKey}' exists: {Graph.ContainsKey(calleeKey)}) not found in graph.");
+            _logger.LogWarning($"Could not add potential dependency edge. Caller Key ('{callerKey}' exists: {Graph.ContainsKey(callerKey)}) or Callee Key ('{calleeKey}' exists: {Graph.ContainsKey(calleeKey)}) not found in graph.");
         }
     }
     // --- End Dependency Helpers ---
@@ -381,7 +386,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         if (node.ExecuteSpecification?.ExecutableEntity is ExecutableProcedureReference procedureReference)
         {
-            if (procedureReference.ProcedureReference?.ProcedureReference.Name != null)
+            if (procedureReference.ProcedureReference?.ProcedureReference?.Name != null)
             {
                 // Resolve key using current context
                 string calleeKey = GetUniqueNodeKey(procedureReference.ProcedureReference.ProcedureReference.Name, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
@@ -392,7 +397,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                 }
                 else
                 {
-                    Console.Error.WriteLine($"Could not resolve EXEC target '{procedureReference.ProcedureReference.ProcedureReference.Name.BaseIdentifier.Value}' with current context to a known object key '{calleeKey}'.");
+                    _logger.LogWarning($"Could not resolve EXEC target '{procedureReference.ProcedureReference.ProcedureReference.Name.BaseIdentifier.Value}' with current context to a known object key '{calleeKey}'.");
                 }
             }
         }
@@ -402,7 +407,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             {
                 if (sqlString is ValueExpression valExpr)
                 {
-                    HandleDynamicSql(valExpr); }
+                    HandleDynamicSql(valExpr);
+                }
             }
         }
 
@@ -445,7 +451,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
                 var fragment = _dynamicSqlParser.Parse(reader, out var errors);
                 if (errors != null && errors.Count > 0)
                 {
-                    Console.Error.WriteLine($"Errors parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {string.Join("; ", errors.Select(e => e.Message))}");
+                    _logger.LogWarning($"Errors parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {string.Join("; ", errors.Select(e => e.Message))}");
                     return;
                 }
 
@@ -457,7 +463,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Exception parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {ex.Message}");
+            _logger.LogWarning($"Exception parsing dynamic SQL within {GetUniqueNodeKey(_currentSqlObject)}: {ex.Message}");
         }
     }
 }
