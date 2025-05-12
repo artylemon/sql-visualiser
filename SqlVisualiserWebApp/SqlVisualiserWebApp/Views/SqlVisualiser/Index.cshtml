@@ -275,7 +275,6 @@
                 clearMessages(); disableControls(); showMessage('Analyzing catalog dependencies...', 'info');
 
                 const postData = { dataSource: dataSource, catalogs: currentSelectedCatalogs };
-                console.log('here');
                 $.ajax({
                     url: '/SqlVisualiser/ConstructDirectedCatalogGraph', method: 'POST', contentType: 'application/json',
                     data: JSON.stringify(postData), dataType: 'json',
@@ -450,16 +449,13 @@
                 highlightedNodeId = tappedNodeId;
 
                 // *** NEW: Display definition ***
-                console.log(nodeData.definition);
-                console.log(nodeData.type);
                 if (nodeData.definition && (nodeData.type === 1 || nodeData.type === 2)) { // Assuming type 1=Proc, 2=Func
                     definitionNodeNameSpan.text(nodeData.label); // Or nodeData.id
                     definitionTextCode.text(nodeData.definition);
                     if (window.Prism) { // Check if Prism is loaded
-                        console.log(definitionTextCode[0])
                         Prism.highlightElement(definitionTextCode[0]); // Pass the DOM element
                     }else{
-                        console.log("No Prism");
+                        console.log("No Prism loaded.");
                     }
                     definitionPreviewArea.slideDown();
                 } else {
