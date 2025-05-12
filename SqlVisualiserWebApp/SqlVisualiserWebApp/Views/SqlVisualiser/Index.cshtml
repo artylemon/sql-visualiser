@@ -69,7 +69,7 @@
         </div>
         <div id="definitionPreviewArea" style="display: none;">
             <h5>Definition: <span id="definitionNodeName"></span></h5>
-            <pre><code id="definitionText"></code></pre>
+            <pre><code id="definitionText" class="language-sql"></code></pre>
         </div>
     </div>
 </div>
@@ -80,6 +80,9 @@
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-multiselect/1.1.2/js/bootstrap-multiselect.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
 
     <script>
         $(document).ready(function () {
@@ -452,6 +455,12 @@
                 if (nodeData.definition && (nodeData.type === 1 || nodeData.type === 2)) { // Assuming type 1=Proc, 2=Func
                     definitionNodeNameSpan.text(nodeData.label); // Or nodeData.id
                     definitionTextCode.text(nodeData.definition);
+                    if (window.Prism) { // Check if Prism is loaded
+                        console.log(definitionTextCode[0])
+                        Prism.highlightElement(definitionTextCode[0]); // Pass the DOM element
+                    }else{
+                        console.log("No Prism");
+                    }
                     definitionPreviewArea.slideDown();
                 } else {
                     definitionPreviewArea.slideUp();
