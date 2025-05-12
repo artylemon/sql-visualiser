@@ -39,3 +39,48 @@ body {
 .multiselect-filter > .input-group > .form-control {
     border-radius: .25rem; /* Ensure search input has rounded corners */
 }
+
+.cy-node-external {
+    border-color: #adb5bd;
+    border-width: 2px;
+    border-style: dashed;
+}
+
+.cy-node-system {
+    border-color: #6c757d;
+    border-width: 1px;
+    border-style: dotted;
+}
+
+.cy-node-highlighted {
+    border-color: #e74c3c !important;
+    border-width: 3px !important;
+    border-style: solid !important;
+}
+
+#definitionPreviewArea {
+    margin-top: 20px;
+    padding: 15px;
+    border: 1px solid #dee2e6;
+    border-radius: .25rem;
+    background-color: #f8f9fa;
+    max-height: 1200px; /* Or your preferred max height */
+    overflow-y: auto; /* Add scroll for long definitions */
+}
+
+#definitionPreviewArea h5 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    font-size: 1.1rem;
+}
+
+#definitionPreviewArea pre {
+    white-space: pre-wrap; /* Allow wrapping for long lines */
+    word-wrap: break-word; /* Break long words */
+    background-color: #fff;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: .25rem;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 0.875rem;
+}
