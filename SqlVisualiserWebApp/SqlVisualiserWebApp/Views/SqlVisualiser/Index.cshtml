@@ -67,8 +67,11 @@
                 @* Cytoscape graph renders here *@
             </div>
         </div>
+        <div id="definitionPreviewArea" style="display: none;">
+            <h5>Definition: <span id="definitionNodeName"></span></h5>
+            <pre><code id="definitionText" class="language-sql"></code></pre>
+        </div>
     </div>
-
 </div>
 
 @section Scripts {
@@ -77,10 +80,13 @@
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
     <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-multiselect/1.1.2/js/bootstrap-multiselect.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
 
     <script>
         $(document).ready(function () {
-                        // --- Selectors ---
+            // --- Selectors ---
             const dataSourceInput = $('#dataSource');
             const catalogSelectionDiv = $('#catalogSelection');
             const catalogDropdown = $('#catalogs');
@@ -93,6 +99,9 @@
             const nodeFilterDropdown = $('#nodeFilter');
             const filterDepthInput = $('#filterDepth');
             const layoutSelector = $('#layoutSelector');
+            const definitionPreviewArea = $('#definitionPreviewArea'); // New
+            const definitionNodeNameSpan = $('#definitionNodeName');   // New
+            const definitionTextCode = $('#definitionText');       // New
 
             // --- State ---
             let cyInstance = null;
@@ -159,10 +168,17 @@
 
             function hideGraphAndFilter() {
                 if (cyInstance) { try { cyInstance.destroy(); } catch (e) { console.error("Error destroying Cytoscape instance:", e); } cyInstance = null; }
-                graphDisplayArea.hide(); nodeFilterContainer.hide();
-                nodeFilterDropdown.empty(); filterDepthInput.val(1); layoutSelector.val('dagre');
-                cyContainer.empty(); fullGraphData = null; currentFilteredElements = null; currentNodeDistances = null;
+                graphDisplayArea.hide();
+                nodeFilterContainer.hide();
+                nodeFilterDropdown.empty();
+                filterDepthInput.val(1);
+                layoutSelector.val('dagre');
+                cyContainer.empty();
+                fullGraphData = null;
                 highlightedNodeId = null;
+                definitionPreviewArea.hide(); // Hide definition preview
+                definitionNodeNameSpan.text('');
+                definitionTextCode.text('');
             }
 
             function fetchCatalogs() {
@@ -253,14 +269,13 @@
                 currentSelectedCatalogs = catalogDropdown.val() || []; // Store selected catalogs
 
                 hideGraphAndFilter();
-
                 if (!dataSource) { showMessage('Data source is missing.', 'warning'); return; }
-                if (currentSelectedCatalogs.length === 0) { showMessage('Please select at least one catalog to analyze.', 'warning'); return; }
+                if (currentSelectedCatalogs.length === 0) {  showMessage('Please select at least one catalog to analyze.', 'warning'); return; }
 
                 clearMessages(); disableControls(); showMessage('Analyzing catalog dependencies...', 'info');
 
                 const postData = { dataSource: dataSource, catalogs: currentSelectedCatalogs };
-
+                console.log('here');
                 $.ajax({
                     url: '/SqlVisualiser/ConstructDirectedCatalogGraph', method: 'POST', contentType: 'application/json',
                     data: JSON.stringify(postData), dataType: 'json',
@@ -331,19 +346,19 @@
                 if (!fullGraphData) { console.error("Full graph data needed."); return; }
                 if (selectedNodeName === '__all__' && ['breadthfirst', 'circle'].includes(selectedLayout)) { selectedLayout = 'dagre'; layoutSelector.val('dagre'); }
 
-                const { nodesToKeep, nodeDistances } = getNodesWithinDepth(selectedNodeName, depth);
-                const filteredElements = createElementsFromNodes(nodesToKeep); // Pass Set
-                currentFilteredElements = filteredElements;
-                currentNodeDistances = nodeDistances;
+                const { nodesToKeep } = getNodesWithinDepth(selectedNodeName, depth); // nodeDistances not directly used by createElementsFromNodes
+                const filteredElements = createElementsFromNodes(nodesToKeep, fullGraphData); // Pass fullGraphData
 
                 if (!filteredElements || filteredElements.length === 0) {
                      showMessage('No nodes match filter/depth criteria.', 'info');
                      if (cyInstance) { try { cyInstance.destroy(); } catch (e) {} cyInstance = null; }
-                     cyContainer.empty(); return;
+                     cyContainer.empty();
+                     definitionPreviewArea.hide(); // Hide definition if no graph
+                     return;
                 }
-                // Pass selectedCatalogs to rendering function for styling
                 renderGraphWithElements(filteredElements, selectedLayout, selectedNodeName, currentSelectedCatalogs);
                 highlightedNodeId = null;
+                definitionPreviewArea.hide(); // Hide definition when filters change
             }
 
             function getNodesWithinDepth(startNodeName, maxDepth) {
@@ -362,24 +377,26 @@
                  return { nodesToKeep, nodeDistances };
             }
 
-            function createElementsFromNodes(nodesToKeepSet) {
+            // *** UPDATED: Ensure 'definition' is added to node data ***
+            function createElementsFromNodes(nodesToKeepSet, graphSourceData) {
                 const elements = []; let processingError = false;
                 try {
                     nodesToKeepSet.forEach(nodeName => {
-                        if (fullGraphData[nodeName]) {
+                        if (graphSourceData[nodeName]) {
                             elements.push({
                                 group: 'nodes',
                                 data: {
                                     id: nodeName,
                                     label: nodeName,
-                                    type: fullGraphData[nodeName].type,
-                                    catalog: fullGraphData[nodeName].catalog || 'Unknown' // Add catalog data
+                                    type: graphSourceData[nodeName].type,
+                                    catalog: graphSourceData[nodeName].catalog || 'Unknown',
+                                    definition: graphSourceData[nodeName].definition || '' // Add definition
                                 }
                             });
                         }
                     });
                     nodesToKeepSet.forEach(sourceNodeName => {
-                        const nodeData = fullGraphData[sourceNodeName];
+                        const nodeData = graphSourceData[sourceNodeName];
                         if (nodeData?.outNodes) {
                             nodeData.outNodes.forEach(targetNodeName => {
                                 if (nodesToKeepSet.has(targetNodeName)) {
@@ -396,26 +413,58 @@
                 if (!cyInstance) return;
                 cyInstance.batch(function(){
                     cyInstance.elements().forEach(ele => {
-                        ele.style('opacity', HIGHLIGHT_OPACITY); ele.style('border-width', 0); ele.style('border-color', 'black');
-                        if (ele.isEdge()) { ele.style('line-color', DEFAULT_EDGE_COLOR); ele.style('target-arrow-color', DEFAULT_EDGE_COLOR); }
+                        ele.style('opacity', HIGHLIGHT_OPACITY);
+                        ele.removeClass('cy-node-highlighted');
+                        if (ele.isEdge()) {
+                            ele.style('line-color', DEFAULT_EDGE_COLOR);
+                            ele.style('target-arrow-color', DEFAULT_EDGE_COLOR);
+                        } else {
+                            ele.style('border-width', ele.hasClass('cy-node-system') ? 1 : (ele.hasClass('cy-node-external') ? 2 : 0));
+                            ele.style('border-color', ele.hasClass('cy-node-system') ? '#6c757d' : (ele.hasClass('cy-node-external') ? '#adb5bd' : 'black'));
+                            ele.style('border-style', ele.hasClass('cy-node-system') ? 'dotted' : (ele.hasClass('cy-node-external') ? 'dashed' : 'solid'));
+                        }
                     });
                 });
                 highlightedNodeId = null;
+                definitionPreviewArea.hide(); // Hide definition on reset
+                definitionNodeNameSpan.text('');
+                definitionTextCode.text('');
             }
 
             function applyHighlightStyles(tappedNode) {
                 if (!cyInstance || !fullGraphData) return;
-                const tappedNodeId = tappedNode.id(); let depth = parseInt(filterDepthInput.val(), 10); if (isNaN(depth) || depth < 0) { depth = 1; }
+                const tappedNodeId = tappedNode.id();
+                const nodeData = tappedNode.data(); // Get data from the tapped Cytoscape node
+                let depth = parseInt(filterDepthInput.val(), 10); if (isNaN(depth) || depth < 0) { depth = 1; }
+
                 const { nodesToKeep: neighborhoodNodes } = getNodesWithinDepth(tappedNodeId, depth);
                 const allEles = cyInstance.elements();
                 const neighborhoodEles = allEles.filter(ele => { if (ele.isNode()) { return neighborhoodNodes.has(ele.id()); } if (ele.isEdge()) { return neighborhoodNodes.has(ele.source().id()) && neighborhoodNodes.has(ele.target().id()); } return false; });
                 const nonNeighborhoodEles = allEles.difference(neighborhoodEles);
+
                 cyInstance.batch(function(){
                     nonNeighborhoodEles.style('opacity', FADE_OPACITY);
                     neighborhoodEles.forEach(ele => { ele.style('opacity', HIGHLIGHT_OPACITY); if (ele.isEdge()) { ele.style('line-color', HIGHLIGHT_EDGE_COLOR); ele.style('target-arrow-color', HIGHLIGHT_EDGE_COLOR); } });
-                    tappedNode.style('border-width', 3); tappedNode.style('border-color', '#e74c3c');
+                    tappedNode.addClass('cy-node-highlighted');
                 });
                 highlightedNodeId = tappedNodeId;
+
+                // *** NEW: Display definition ***
+                console.log(nodeData.definition);
+                console.log(nodeData.type);
+                if (nodeData.definition && (nodeData.type === 1 || nodeData.type === 2)) { // Assuming type 1=Proc, 2=Func
+                    definitionNodeNameSpan.text(nodeData.label); // Or nodeData.id
+                    definitionTextCode.text(nodeData.definition);
+                    if (window.Prism) { // Check if Prism is loaded
+                        console.log(definitionTextCode[0])
+                        Prism.highlightElement(definitionTextCode[0]); // Pass the DOM element
+                    }else{
+                        console.log("No Prism");
+                    }
+                    definitionPreviewArea.slideDown();
+                } else {
+                    definitionPreviewArea.slideUp();
+                }
             }
 
             // *** UPDATED: Add catalog-based styling ***

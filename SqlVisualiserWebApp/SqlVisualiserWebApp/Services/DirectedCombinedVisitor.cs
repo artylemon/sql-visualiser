@@ -39,10 +39,11 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
             obj.Catalog ??= "Unknown";
             obj.Schema ??= "dbo";
+            obj.Definition ??= string.Empty;
             string key = GetUniqueNodeKey(obj);
             if (!Graph.ContainsKey(key))
             {
-                Graph.Add(key, new DirectedGraphNode(obj.Name, obj.Type, obj.Catalog));
+                Graph.Add(key, new DirectedGraphNode(obj.Name, obj.Type, obj.Catalog, obj.Definition));
             }
             else
             {
@@ -89,7 +90,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
              Graph[_currentNodeKey] = new DirectedGraphNode(
                 _currentSqlObject.Name,
                 _currentSqlObject.Type,
-                _currentSqlObject.Catalog ?? "Unknown"
+                _currentSqlObject.Catalog ?? "Unknown",
+                _currentSqlObject.Definition ?? string.Empty
             );
         }
     }
