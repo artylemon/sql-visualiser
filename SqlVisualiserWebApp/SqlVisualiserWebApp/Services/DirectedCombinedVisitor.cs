@@ -43,7 +43,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             string key = GetUniqueNodeKey(obj);
             if (!Graph.ContainsKey(key))
             {
-                Graph.Add(key, new DirectedGraphNode(obj.Name, obj.Type, obj.Catalog, obj.Definition));
+                Graph.Add(key, new DirectedGraphNode(obj.Name, obj.Type, obj.Catalog, obj.Definition.Trim()));
             }
             else
             {
