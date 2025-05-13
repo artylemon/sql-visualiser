@@ -141,10 +141,36 @@ namespace SqlVisualiserWebApp.Services
                 using (var connection = new SqlConnection(connectionString))
                 {
                     connection.Open();
-                    string query = @"
-                        SELECT s.name AS SchemaName, t.name AS TableName
-                        FROM sys.tables t
-                        JOIN sys.schemas s ON t.schema_id = s.schema_id";
+                    string query = @$"
+                SELECT 
+                    s.name AS SchemaName, 
+                    t.name AS TableName,
+                    (
+                        SELECT 
+                            'CREATE TABLE [' + s.name + '].[' + t.name + '] ({System.Environment.NewLine} ' + 
+                            STRING_AGG(
+                                '[' + c.name + '] ' + 
+                                TYPE_NAME(c.user_type_id) + 
+                                CASE 
+                                    WHEN TYPE_NAME(c.user_type_id) IN ('varchar', 'char', 'varbinary', 'binary', 'nvarchar', 'nchar') 
+                                         THEN '(' + 
+                                            CASE WHEN c.max_length = -1 THEN 'MAX' ELSE CAST(
+                                                CASE 
+                                                    WHEN TYPE_NAME(c.user_type_id) IN ('nchar', 'nvarchar') 
+                                                        THEN c.max_length / 2 
+                                                    ELSE c.max_length 
+                                                END AS VARCHAR(10)
+                                            ) END + ')'
+                                    ELSE ''
+                                END +
+                                CASE WHEN c.is_nullable = 0 THEN ' NOT NULL' ELSE ' NULL' END
+                            , ',{System.Environment.NewLine} ') 
+                        + ')'
+                        FROM sys.columns c
+                        WHERE c.object_id = t.object_id
+                    ) AS TableDefinition
+                FROM sys.tables t
+                JOIN sys.schemas s ON t.schema_id = s.schema_id";
 
                     var command = new SqlCommand(query, connection);
                     using (var reader = command.ExecuteReader())
@@ -153,9 +179,15 @@ namespace SqlVisualiserWebApp.Services
                         {
                             string schemaName = reader.GetString(0);
                             string tableName = reader.GetString(1);
+                            string definition = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
 
-                            // Create a new Table object and add it to the list
-                            tables.Add(new SqlTable { Name = tableName, Schema = schemaName, Catalog = catalog });
+                            tables.Add(new SqlTable
+                            {
+                                Name = tableName,
+                                Schema = schemaName,
+                                Catalog = catalog,
+                                Definition = definition
+                            });
                         }
                     }
                 }

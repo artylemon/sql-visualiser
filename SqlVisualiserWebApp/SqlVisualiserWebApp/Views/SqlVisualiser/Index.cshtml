@@ -449,7 +449,7 @@
                 highlightedNodeId = tappedNodeId;
 
                 // *** NEW: Display definition ***
-                if (nodeData.definition && (nodeData.type === 1 || nodeData.type === 2)) { // Assuming type 1=Proc, 2=Func
+                if (nodeData.definition) { // Assuming type 1=Proc, 2=Func
                     definitionNodeNameSpan.text(nodeData.label); // Or nodeData.id
                     definitionTextCode.text(nodeData.definition);
                     if (window.Prism) { // Check if Prism is loaded
