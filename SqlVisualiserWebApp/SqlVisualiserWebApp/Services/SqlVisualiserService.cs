@@ -142,35 +142,42 @@ namespace SqlVisualiserWebApp.Services
                 {
                     connection.Open();
                     string query = @$"
-                SELECT 
-                    s.name AS SchemaName, 
-                    t.name AS TableName,
-                    (
-                        SELECT 
-                            'CREATE TABLE [' + s.name + '].[' + t.name + '] ({System.Environment.NewLine} ' + 
-                            STRING_AGG(
-                                '[' + c.name + '] ' + 
-                                TYPE_NAME(c.user_type_id) + 
-                                CASE 
-                                    WHEN TYPE_NAME(c.user_type_id) IN ('varchar', 'char', 'varbinary', 'binary', 'nvarchar', 'nchar') 
-                                         THEN '(' + 
-                                            CASE WHEN c.max_length = -1 THEN 'MAX' ELSE CAST(
-                                                CASE 
-                                                    WHEN TYPE_NAME(c.user_type_id) IN ('nchar', 'nvarchar') 
-                                                        THEN c.max_length / 2 
-                                                    ELSE c.max_length 
-                                                END AS VARCHAR(10)
-                                            ) END + ')'
-                                    ELSE ''
-                                END +
-                                CASE WHEN c.is_nullable = 0 THEN ' NOT NULL' ELSE ' NULL' END
-                            , ',{System.Environment.NewLine} ') 
-                        + ')'
-                        FROM sys.columns c
-                        WHERE c.object_id = t.object_id
-                    ) AS TableDefinition
-                FROM sys.tables t
-                JOIN sys.schemas s ON t.schema_id = s.schema_id";
+                SELECT
+                s.name AS SchemaName,
+                t.name AS TableName,
+                (
+                    SELECT
+                        CAST('CREATE TABLE [' AS NVARCHAR(MAX)) + s.name + '].[' + t.name + '] (' + CHAR(13) + CHAR(10) + ' ' +
+                        STRING_AGG(
+                            -- Cast each part of the column definition to NVARCHAR(MAX)
+                            -- This is crucial because STRING_AGG will use the data type of its input expressions
+                            CAST('[' AS NVARCHAR(MAX)) + c.name + '] ' +
+                            TYPE_NAME(c.user_type_id) +
+                            CASE
+                                WHEN TYPE_NAME(c.user_type_id) IN ('varchar', 'char', 'varbinary', 'binary', 'nvarchar', 'nchar')
+                                THEN '(' +
+                                    CASE
+                                        WHEN c.max_length = -1 THEN 'MAX'
+                                        ELSE CAST(
+                                            CASE
+                                                WHEN TYPE_NAME(c.user_type_id) IN ('nchar', 'nvarchar')
+                                                THEN c.max_length / 2
+                                                ELSE c.max_length
+                                            END AS VARCHAR(10) -- This cast is for the length value itself, not the whole string
+                                        )
+                                    END + ')'
+                                ELSE ''
+                            END +
+                            CASE WHEN c.is_nullable = 0 THEN ' NOT NULL' ELSE ' NULL' END,
+                            ',' + CHAR(13) + CHAR(10) + ' ' -- Delimiter with newline
+                        ) WITHIN GROUP (ORDER BY c.column_id) -- It's good practice to order columns
+                        + CHAR(13) + CHAR(10) + ')' -- Closing parenthesis for CREATE TABLE
+                    FROM sys.columns c
+                    WHERE c.object_id = t.object_id
+                ) AS TableDefinition
+            FROM sys.tables t
+            JOIN sys.schemas s ON t.schema_id = s.schema_id;
+            ";
 
                     var command = new SqlCommand(query, connection);
                     using (var reader = command.ExecuteReader())
