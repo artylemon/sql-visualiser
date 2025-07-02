@@ -169,8 +169,9 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         var tempSchemaObjName = new SchemaObjectName();
         tempSchemaObjName.Identifiers.Add(node.FunctionName);
-        string functionKey = GetUniqueNodeKey(tempSchemaObjName, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-        if (Graph.TryGetValue(functionKey, out var graphNode) && (graphNode.Type == NodeType.Function))
+
+        if (TryGetGraphNode(tempSchemaObjName, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var functionKey, out var graphNode)
+            && graphNode.Type == NodeType.Function)
         {
             AddDataFlowDependency(functionKey, _currentNodeKey);
         }
@@ -186,8 +187,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             return;
         }
 
-        string functionKey = GetUniqueNodeKey(node.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-        if (Graph.TryGetValue(functionKey, out var graphNode) && (graphNode.Type == NodeType.Function))
+        if (TryGetGraphNode(node.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var functionKey, out var graphNode)
+            && graphNode.Type == NodeType.Function)
         {
             AddDataFlowDependency(functionKey, _currentNodeKey);
         }
@@ -197,15 +198,13 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
     public override void Visit(NamedTableReference node)
     {
-         if (_currentSqlObject == null || _currentNodeKey == null || node.SchemaObject == null)
+        if (_currentSqlObject == null || _currentNodeKey == null || node.SchemaObject == null)
         {
             base.Visit(node);
             return;
         }
 
-        string referencedKey = GetUniqueNodeKey(node.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-
-        if (Graph.TryGetValue(referencedKey, out var referencedNode))
+        if (TryGetGraphNode(node.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var referencedKey, out var referencedNode))
         {
             bool isCurrentDmlTarget = !string.IsNullOrWhiteSpace(_currentDmlTargetTableKey) &&
                                       referencedKey.Equals(_currentDmlTargetTableKey, StringComparison.OrdinalIgnoreCase);
@@ -216,7 +215,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             }
             else if (referencedNode.Type == NodeType.Function)
             {
-                 AddDataFlowDependency(referencedKey, _currentNodeKey);
+                AddDataFlowDependency(referencedKey, _currentNodeKey);
             }
         }
 
@@ -310,10 +309,8 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         if (node.InsertSpecification?.Target is NamedTableReference namedTable && namedTable.SchemaObject != null)
         {
-            // INSERT target is typically not aliased via a FROM clause in the same statement.
-            // The SchemaObject of the NamedTableReference should be the actual table.
-            string targetKey = GetUniqueNodeKey(namedTable.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-            if (Graph.TryGetValue(targetKey, out var targetNode) && targetNode.Type == NodeType.Table)
+            if (TryGetGraphNode(namedTable.SchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var targetKey, out var targetNode)
+                && targetNode.Type == NodeType.Table)
             {
                 AddDataWriteDependency(_currentNodeKey, targetKey);
                 _currentDmlTargetTableKey = targetKey;
@@ -343,18 +340,18 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         if (node.UpdateSpecification?.Target is NamedTableReference targetRefNode && targetRefNode.SchemaObject != null)
         {
             SchemaObjectName actualTargetSchemaObject = targetRefNode.SchemaObject;
-            // Only try to resolve alias if the target is a simple, unqualified identifier
             if (targetRefNode.SchemaObject.DatabaseIdentifier == null && targetRefNode.SchemaObject.SchemaIdentifier == null)
             {
-                 actualTargetSchemaObject = ResolveDmlTargetAlias(targetRefNode, node.UpdateSpecification.FromClause) ?? targetRefNode.SchemaObject;
+                actualTargetSchemaObject = ResolveDmlTargetAlias(targetRefNode, node.UpdateSpecification.FromClause) ?? targetRefNode.SchemaObject;
             }
 
-            string targetKey = GetUniqueNodeKey(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-            if (Graph.TryGetValue(targetKey, out var targetGraphNode) && targetGraphNode.Type == NodeType.Table)
+            if (TryGetGraphNode(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var targetKey, out var targetGraphNode)
+                && targetGraphNode.Type == NodeType.Table)
             {
-                 AddDataWriteDependency(_currentNodeKey, targetKey);
-                 _currentDmlTargetTableKey = targetKey;
-            } else
+                AddDataWriteDependency(_currentNodeKey, targetKey);
+                _currentDmlTargetTableKey = targetKey;
+            }
+            else
             {
                 _logger.LogWarning($"UPDATE target '{actualTargetSchemaObject.BaseIdentifier.Value}' (resolved to key '{targetKey}') not found in graph or not a table for current node {_currentNodeKey}.");
             }
@@ -374,7 +371,7 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
     {
         string? originalDmlTargetKey = _currentDmlTargetTableKey;
         _currentDmlTargetTableKey = null;
-         if (_currentSqlObject == null || _currentNodeKey == null)
+        if (_currentSqlObject == null || _currentNodeKey == null)
         {
             base.Visit(node);
             return;
@@ -385,15 +382,16 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
             SchemaObjectName actualTargetSchemaObject = targetRefNode.SchemaObject;
             if (targetRefNode.SchemaObject.DatabaseIdentifier == null && targetRefNode.SchemaObject.SchemaIdentifier == null)
             {
-                 actualTargetSchemaObject = ResolveDmlTargetAlias(targetRefNode, node.DeleteSpecification.FromClause) ?? targetRefNode.SchemaObject;
+                actualTargetSchemaObject = ResolveDmlTargetAlias(targetRefNode, node.DeleteSpecification.FromClause) ?? targetRefNode.SchemaObject;
             }
 
-            string targetKey = GetUniqueNodeKey(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-             if (Graph.TryGetValue(targetKey, out var targetGraphNode) && targetGraphNode.Type == NodeType.Table)
+            if (TryGetGraphNode(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var targetKey, out var targetGraphNode)
+                && targetGraphNode.Type == NodeType.Table)
             {
-                 AddDataWriteDependency(_currentNodeKey, targetKey);
-                 _currentDmlTargetTableKey = targetKey;
-            } else
+                AddDataWriteDependency(_currentNodeKey, targetKey);
+                _currentDmlTargetTableKey = targetKey;
+            }
+            else
             {
                 _logger.LogWarning($"DELETE target '{actualTargetSchemaObject.BaseIdentifier.Value}' (resolved to key '{targetKey}') not found in graph or not a table for current node {_currentNodeKey}.");
             }
@@ -421,17 +419,15 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         if (node.MergeSpecification?.Target is NamedTableReference targetRefNode && targetRefNode.SchemaObject != null)
         {
-            // For MERGE, the targetRefNode.SchemaObject IS the actual table, even if aliased in the MERGE statement itself.
-            // The alias is part of the targetRefNode, but SchemaObject refers to the base.
-            // ResolveDmlTargetAlias might be overly complex here if the USING clause is passed.
             SchemaObjectName actualTargetSchemaObject = targetRefNode.SchemaObject;
 
-            string targetKey = GetUniqueNodeKey(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-            if (Graph.TryGetValue(targetKey, out var targetGraphNode) && targetGraphNode.Type == NodeType.Table)
+            if (TryGetGraphNode(actualTargetSchemaObject, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var targetKey, out var targetGraphNode)
+                && targetGraphNode.Type == NodeType.Table)
             {
-                 AddDataWriteDependency(_currentNodeKey, targetKey);
-                 _currentDmlTargetTableKey = targetKey;
-            } else
+                AddDataWriteDependency(_currentNodeKey, targetKey);
+                _currentDmlTargetTableKey = targetKey;
+            }
+            else
             {
                 _logger.LogWarning($"MERGE target '{actualTargetSchemaObject.BaseIdentifier.Value}' (resolved to key '{targetKey}') not found in graph or not a table for current node {_currentNodeKey}.");
             }
@@ -457,10 +453,9 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
 
         if (node.ExecuteSpecification?.ExecutableEntity is ExecutableProcedureReference procedureReference)
         {
-            if(procedureReference.ProcedureReference?.ProcedureReference?.Name != null)
+            if (procedureReference.ProcedureReference?.ProcedureReference?.Name != null)
             {
-                 string calleeKey = GetUniqueNodeKey(procedureReference.ProcedureReference.ProcedureReference?.Name, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo");
-                 if(Graph.ContainsKey(calleeKey))
+                if (TryGetGraphNode(procedureReference.ProcedureReference.ProcedureReference.Name, _currentSqlObject.Catalog ?? "Unknown", _currentSqlObject.Schema ?? "dbo", out var calleeKey, out var calleeNode))
                 {
                     HandlePotentialDependency(_currentNodeKey, calleeKey);
                 }
@@ -472,11 +467,12 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         }
         else if (node.ExecuteSpecification?.ExecutableEntity is ExecutableStringList stringList)
         {
-             foreach (var sqlString in stringList.Strings)
+            foreach (var sqlString in stringList.Strings)
             {
                 if (sqlString is ValueExpression valExpr)
                 {
-                    HandleDynamicSql(valExpr); }
+                    HandleDynamicSql(valExpr);
+                }
             }
         }
 
@@ -533,5 +529,33 @@ public class DirectedCombinedVisitor : TSqlFragmentVisitor
         {
             _logger.LogError(ex, $"Exception parsing dynamic SQL within {currentContextKey}. SQL: {sqlExpression.ToString() ?? "NULL"}");
         }
+    }
+
+    private bool TryGetGraphNode(
+        SchemaObjectName schemaObjectName,
+        string defaultCatalog,
+        string defaultSchema,
+        out string foundKey,
+        out DirectedGraphNode? node)
+    {
+        // Try with the provided schema first
+        foundKey = GetUniqueNodeKey(schemaObjectName, defaultCatalog, defaultSchema);
+        if (Graph.TryGetValue(foundKey, out node))
+        {
+            return true;
+        }
+
+        // If not found, try with "dbo" schema (unless already tried)
+        if (!string.Equals(defaultSchema, "dbo", StringComparison.OrdinalIgnoreCase))
+        {
+            foundKey = GetUniqueNodeKey(schemaObjectName, defaultCatalog, "dbo");
+            if (Graph.TryGetValue(foundKey, out node))
+            {
+                return true;
+            }
+        }
+
+        node = null;
+        return false;
     }
 }
