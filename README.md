@@ -107,6 +107,11 @@ Videos:
 - ![Retrieving Catalogs](docs/media/videos/RetrievingCatalogs.webm)
 - ![Selecting Catalogs](docs/media/videos/SelectCatalogs.webm)
 
+<video src="docs/media/videos/RetrievingCatalogs.webm" controls muted playsinline width="400"></video>
+<video src="docs/media/videos/SelectCatalogs.webm" controls muted playsinline width="400"></video>
+
+![Database Analysis Workflow](docs/media/database-analysis.gif "Entering server, retrieving catalogs, multi-selecting, running analysis")
+
 Steps:
 1. Provide data source.
 2. Retrieve catalogs (lists all accessible catalogs; system catalogs included but visually distinct later).
@@ -116,6 +121,10 @@ Steps:
 ### Inter-Database Analysis
 
 Cross-database edges appear automatically when dependent objects span selected catalogs.
+
+(Uses same capture session as above if not separately recorded.)
+
+![Inter-Database Analysis](docs/media/inter-database-analysis.gif "Cross-database edges between selected catalogs")
 
 Steps:
 1. Select two or more catalogs.
@@ -127,8 +136,13 @@ Steps:
 Layout switching & depth filtering.
 
 Videos:
-![Graph Layouts](docs/media/videos/GraphLayouts.webm)
-![Depth Levels / Filtering](docs/media/videos/DepthLevels.webm)
+- [Graph Layouts](docs/media/videos/GraphLayouts.webm)
+- [Depth Levels / Filtering](docs/media/videos/DepthLevels.webm)
+
+<video src="docs/media/videos/GraphLayouts.webm" controls muted playsinline width="400"></video>
+<video src="docs/media/videos/DepthLevels.webm" controls muted playsinline width="400"></video>
+
+![Interactive Graph](docs/media/interactive-graph.gif "Zooming, panning, switching layouts, filtering, depth adjustment")
 
 Key interactions:
 - Zoom: mouse wheel / trackpad.
@@ -142,6 +156,8 @@ Key interactions:
 
 Focus is implicit—no extra button. (Covered in layout / depth videos.)
 
+![Focus Mode](docs/media/focus-mode.gif "Click to focus; click again/background to reset")
+
 Usage:
 1. Click a node: non-neighbors fade; direct neighborhood remains vivid; edges thicken color.
 2. Depth control still applies—larger depth expands visible neighbors before focus highlight.
@@ -152,7 +168,11 @@ Usage:
 Displays SQL definition / metadata when backend supplies `definition` in graph payload.
 
 Video:
-![Node Preview / Definitions](docs/media/videos/NodesPreview.webm)
+- [Node Preview / Definitions](docs/media/videos/NodesPreview.webm)
+
+<video src="docs/media/videos/NodesPreview.webm" controls muted playsinline width="480"></video>
+
+![Node Preview](docs/media/previews.gif "Preview panel with SQL definition syntax highlighted")
 
 Contents (when available):
 - Object name & catalog.
