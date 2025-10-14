@@ -17,7 +17,6 @@ Built with ASP.NET Core Razor Pages and .NET 8.
 - [Detailed Feature Walkthrough](#detailed-feature-walkthrough)
   - [Intro / Overview](#intro--overview)
   - [Database Analysis](#database-analysis)
-  - [Inter-Database Analysis](#inter-database-analysis)
   - [Interactive Graphs](#interactive-graphs)
   - [Node Focus & Neighborhood Highlight](#node-focus--neighborhood-highlight)
   - [Previews (Definitions)](#previews-definitions)
@@ -91,10 +90,6 @@ dotnet run
 
 ## Detailed Feature Walkthrough
 
-(Animated GIFs (small loops) reside in `docs/media/`; full videos now provided as WebM under `docs/media/videos/`.)
-
-> If GitHub does not autoplay inline video tags, use the direct links to download / open videos locally.
-
 ### Intro / Overview
 
 Video:
@@ -104,45 +99,34 @@ Video:
 Shows connecting, retrieving catalogs, selecting multiple, and launching analysis.
 
 Videos:
-- ![Retrieving Catalogs](docs/media/videos/RetrievingCatalogs.webm)
-- ![Selecting Catalogs](docs/media/videos/SelectCatalogs.webm)
 
-<video src="docs/media/videos/RetrievingCatalogs.webm" controls muted playsinline width="400"></video>
-<video src="docs/media/videos/SelectCatalogs.webm" controls muted playsinline width="400"></video>
 
-![Database Analysis Workflow](docs/media/database-analysis.gif "Entering server, retrieving catalogs, multi-selecting, running analysis")
+https://github.com/user-attachments/assets/a392e2a9-04d9-4174-8388-b5f04883109f
+
+
+https://github.com/user-attachments/assets/73da9a33-9426-4e1f-8856-0a2360169d22
+
 
 Steps:
 1. Provide data source.
 2. Retrieve catalogs (lists all accessible catalogs; system catalogs included but visually distinct later).
-3. Multi-select desired catalogs.
+3. Select desired catalogs.
 4. Run analysis; a success message appears, then the graph renders.
 
-### Inter-Database Analysis
-
-Cross-database edges appear automatically when dependent objects span selected catalogs.
-
-(Uses same capture session as above if not separately recorded.)
-
-![Inter-Database Analysis](docs/media/inter-database-analysis.gif "Cross-database edges between selected catalogs")
-
-Steps:
-1. Select two or more catalogs.
-2. Run analysis once.
-3. Inspect edges whose source and target have different catalog labels (consider adding a legend in future – see roadmap).
 
 ### Interactive Graphs
 
 Layout switching & depth filtering.
 
 Videos:
-- [Graph Layouts](docs/media/videos/GraphLayouts.webm)
-- [Depth Levels / Filtering](docs/media/videos/DepthLevels.webm)
 
-<video src="docs/media/videos/GraphLayouts.webm" controls muted playsinline width="400"></video>
-<video src="docs/media/videos/DepthLevels.webm" controls muted playsinline width="400"></video>
 
-![Interactive Graph](docs/media/interactive-graph.gif "Zooming, panning, switching layouts, filtering, depth adjustment")
+https://github.com/user-attachments/assets/6cf0ae8c-5931-4188-af12-e13ddb14aaec
+
+
+https://github.com/user-attachments/assets/f448ebaa-2dda-40cc-97b9-a194657ddd40
+
+
 
 Key interactions:
 - Zoom: mouse wheel / trackpad.
@@ -154,13 +138,11 @@ Key interactions:
 
 ### Node Focus & Neighborhood Highlight
 
-Focus is implicit—no extra button. (Covered in layout / depth videos.)
-
-![Focus Mode](docs/media/focus-mode.gif "Click to focus; click again/background to reset")
+Focus is implicitâ€”no extra button.
 
 Usage:
 1. Click a node: non-neighbors fade; direct neighborhood remains vivid; edges thicken color.
-2. Depth control still applies—larger depth expands visible neighbors before focus highlight.
+2. Depth control still appliesâ€”larger depth expands visible neighbors before focus highlight.
 3. Click the same node again or empty background to clear focus.
 
 ### Previews (Definitions)
@@ -168,11 +150,10 @@ Usage:
 Displays SQL definition / metadata when backend supplies `definition` in graph payload.
 
 Video:
-- [Node Preview / Definitions](docs/media/videos/NodesPreview.webm)
 
-<video src="docs/media/videos/NodesPreview.webm" controls muted playsinline width="480"></video>
+https://github.com/user-attachments/assets/2b6d44ec-a329-46c7-90db-a22ddce92d6d
 
-![Node Preview](docs/media/previews.gif "Preview panel with SQL definition syntax highlighted")
+
 
 Contents (when available):
 - Object name & catalog.
@@ -197,9 +178,9 @@ Core Enhancements:
 - [~] System vs external catalog styling (baseline; refinement & legend pending).
 - [ ] Legend for edge / node semantics (reads vs writes vs calls, catalog color keys).
 - [ ] Edge categorization & toggle controls (filter by relation type).
+- [ ] Preview of logs / display of non-found entities like temp tables (currently only shown as warnings in logs).
 
 Data & Lineage:
-- [~] Object DDL extraction (baseline definitions; need consistent backend population & security filtering).
 - [ ] Column-level lineage (track column propagation through procedures / functions).
 - [ ] Incremental / delta analysis (only reprocess changed objects).
 
@@ -212,14 +193,11 @@ Platform & Integration:
 - [ ] REST API endpoint for headless graph extraction (CI validation scenarios).
 - [ ] Authentication options: SQL Auth & Azure AD (currently assumes environment / integrated).
 - [ ] Configuration UI for layout defaults & performance parameters.
-- [ ] Docker container & optional compose file for easy deployment.
 
 Performance & Quality:
 - [ ] Virtualization / progressive rendering for very large graphs (>10k nodes) & background layouting.
 - [ ] Caching layer for previously analyzed catalogs.
 - [ ] Test coverage expansion: integration tests for parsing & graph building; UI-level tests (Playwright / Selenium) for baseline flows.
-
-Contributions / feature requests welcome—open or upvote an issue to influence priority.
 
 ---
 
